@@ -47,19 +47,51 @@ void DisplayManager::render() {
     if (!_isDirty) return;
     display.clearBuffer();
     drawStatusBar();
+    
     switch (_currentStatus.state) {
-        case SystemState::IDLE: drawMenu(); break;
-        case SystemState::SCAN_COMPLETE: drawTargetList(); break;
-        case SystemState::SCAN_EMPTY: drawPopup("No Networks"); break;
+        case SystemState::IDLE: 
+            drawMenu(); 
+            break;
+            
+        case SystemState::SCAN_COMPLETE: 
+            drawTargetList(); 
+            break;
+            
+        case SystemState::SCAN_EMPTY: 
+            drawPopup("No Networks"); 
+            break;
+            
+        // --- NRF / SubGHz Analysis ---
         case SystemState::ANALYZING_NRF: 
-        case SystemState::ANALYZING_SUBGHZ: 
-        case SystemState::SNIFFING_NRF: drawSpectrum(); break;
-        case SystemState::ATTACKING_SUBGHZ: 
-            if(_currentStatus.isReplaying) drawPopup("Replaying..."); else drawPopup("Jamming 433..."); break;
-        case SystemState::MENU_SELECT_BLE: drawBleMenu(); break;
-        case SystemState::MENU_SELECT_NRF: drawNrfMenu(); break;
-        case SystemState::ADMIN_MODE: drawAdminScreen(); break;
-        default: drawAttackDetails(); break;
+        case SystemState::ANALYZING_SUBGHZ_RX: // FIXED NAME
+        case SystemState::SNIFFING_NRF: 
+            drawSpectrum(); 
+            break;
+            
+        // --- SubGHz Attack ---
+        case SystemState::ATTACKING_SUBGHZ_TX: // FIXED NAME
+            if(_currentStatus.isReplaying) drawPopup("Replaying..."); 
+            else drawPopup("Jamming 433..."); 
+            break;
+            
+        // --- Menus ---
+        case SystemState::MENU_SELECT_BLE: 
+            drawBleMenu(); 
+            break;
+            
+        case SystemState::MENU_SELECT_NRF: 
+            drawNrfMenu(); 
+            break;
+            
+        // --- Admin ---
+        case SystemState::ADMIN_MODE: 
+        case SystemState::WEB_CLIENT_CONNECTED: // FIXED: Handle new state
+            drawAdminScreen(); 
+            break;
+            
+        default: 
+            drawAttackDetails(); 
+            break;
     }
     display.sendBuffer(); _isDirty = false;
 }
@@ -84,9 +116,15 @@ void DisplayManager::drawStatusBar() {
     display.drawFrame(110, 0, 14, 8); display.drawBox(112, 2, pct/10, 4);
     
     const char* s = "IDLE";
-    if(_currentStatus.state == SystemState::ATTACKING_WIFI) s="WIFI ATK";
+    
+    // FIXED: Updated Enum checks
+    if(_currentStatus.state == SystemState::ATTACKING_WIFI_DEAUTH) s="DEAUTH";
+    else if(_currentStatus.state == SystemState::ATTACKING_WIFI_SPAM) s="BEACON";
+    else if(_currentStatus.state == SystemState::ATTACKING_EVIL_TWIN) s="EVIL TWIN";
     else if(_currentStatus.state == SystemState::ATTACKING_NRF) s="NRF JAM";
     else if(_currentStatus.state == SystemState::ADMIN_MODE) s="ADMIN";
+    else if(_currentStatus.state == SystemState::WEB_CLIENT_CONNECTED) s="WEB CON";
+    
     display.drawStr(0, 8, s); 
 }
 
@@ -113,7 +151,6 @@ void DisplayManager::drawAttackDetails() {
     if(_currentStatus.rollingCodeDetected) display.drawStr(0,50,"! ROLLING CODE !"); 
 }
 
-// v3.0 UX Fix: Понятный экран админки
 void DisplayManager::drawAdminScreen() {
     display.setFont(u8g2_font_5x8_tf);
     display.drawStr(0, 25, "SSID: nRF_Admin");

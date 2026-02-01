@@ -11,7 +11,7 @@ constexpr size_t SPECTRUM_CHANNELS = 128;
 enum class SystemState {
     IDLE,
     
-    // Menus
+    // Menus (UI States)
     MENU_SELECT_BLE, 
     MENU_SELECT_NRF,
     
@@ -19,32 +19,32 @@ enum class SystemState {
     SCANNING, 
     SCAN_COMPLETE, 
     SCAN_EMPTY,
-    ATTACKING_WIFI_DEAUTH,  // New: Specific Red Strobe
-    ATTACKING_WIFI_SPAM,    // New: Yellow Blink
-    ATTACKING_EVIL_TWIN,    // New: Purple Static
-    HANDSHAKE_CAPTURED,     // New: Rainbow
+    ATTACKING_WIFI_DEAUTH,  // Red Strobe
+    ATTACKING_WIFI_SPAM,    // Yellow Blink
+    ATTACKING_EVIL_TWIN,    // Purple Static
+    HANDSHAKE_CAPTURED,     // Rainbow
     
     // Web
     ADMIN_MODE,
-    WEB_CLIENT_CONNECTED,   // New: Cyan Breathe
+    WEB_CLIENT_CONNECTED,   // Cyan Breathe
     
     // BLE
-    ATTACKING_BLE,
+    ATTACKING_BLE,          // Blue Breathe
     
     // NRF
-    ATTACKING_NRF,          // Jamming
-    ATTACKING_MOUSEJACK,    // New: Red Flash
-    SNIFFING_NRF,           // New: White Dim
+    ATTACKING_NRF,          // Jamming (Red Strobe)
+    ATTACKING_MOUSEJACK,    // Red Flash
+    SNIFFING_NRF,           // White Dim
     ANALYZING_NRF,
     
     // Sub-GHz
-    ATTACKING_SUBGHZ_TX,    // New: Orange Static
-    ANALYZING_SUBGHZ_RX,    // New: Blue Blink
+    ATTACKING_SUBGHZ_TX,    // Orange Static
+    ANALYZING_SUBGHZ_RX,    // Blue Blink
     
     // System
     PC_CLIENT_MODE,
     SYS_ERROR,
-    SD_ERROR                // New: Brick Red
+    SD_ERROR                // Brick Red Static
 };
 
 enum class InputEvent { NONE, BTN_UP, BTN_DOWN, BTN_SELECT, BTN_BACK };

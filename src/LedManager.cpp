@@ -14,7 +14,7 @@ LedManager::LedManager() :
 
 void LedManager::init() { 
     _pixels.begin(); 
-    _pixels.setBrightness(50); // Глобальная яркость 20%
+    _pixels.setBrightness(50); // Глобальная яркость 20% (чтобы не слепило)
     _pixels.clear(); 
     _pixels.show(); 
 }

