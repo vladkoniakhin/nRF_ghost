@@ -157,12 +157,13 @@ graph TD
 После прошивки откройте **Serial Monitor** (скорость 115200).
 
 **Правильный лог загрузки:**
+
 ```text
 [INFO] System Init...
 [INFO] SD OK
 [INFO] CC1101 Init: OK
 [INFO] NRF24 Init: OK
-
+```
 ### ❓ Возможные проблемы (Troubleshooting)
 
 * **"SD Fail":** Проверьте подключение пина `CS` (GPIO 13) и убедитесь, что карта отформатирована в файловую систему **FAT32**.
