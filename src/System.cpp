@@ -7,11 +7,15 @@
 #include "NrfManager.h"
 #include "SubGhzManager.h"
 #include "WebPortalManager.h" 
-#include <esp_task_wdt.h> // Для сброса Watchdog
+#include <esp_task_wdt.h>
 
 SemaphoreHandle_t g_spiMutex = nullptr;
 
-// RAII Wrapper для мьютекса (гарантирует разблокировку при выходе из scope)
+// Статический буфер для Serial (защита от фрагментации кучи и Deadlock)
+static char g_serialBuffer[256]; 
+static uint16_t g_serialIndex = 0;
+
+// RAII Wrapper
 class SpiLock {
 public:
     SpiLock(uint32_t timeoutMs = 1000) {
@@ -42,13 +46,30 @@ SystemController::SystemController() : _currentState(SystemState::IDLE), _active
 void SystemController::init() {
     g_spiMutex = xSemaphoreCreateMutex();
     
-    // Инициализация SPI и SD с защитой
+    // 1. Init LED first to show errors
+    LedManager::getInstance().init();
+
+    // 2. Critical Hardware Check (UX-01 Fix)
     {
         SpiLock lock(2000);
         if (lock.locked()) {
             SdManager::getInstance().init();
+            if (!SdManager::getInstance().isMounted()) {
+                Serial.println("[SYS] CRITICAL: SD Card not found!");
+                
+                // FATAL ERROR LOOP
+                // We trap the system here so the user clearly sees the issue via LED
+                StatusMessage err; 
+                err.state = SystemState::SD_ERROR;
+                
+                while(true) {
+                    LedManager::getInstance().setStatus(err);
+                    LedManager::getInstance().update();
+                    delay(10); // Allow WDT reset in background if configured
+                }
+            }
         } else {
-            Serial.println("[SYS] Critical: Failed to init SD (Mutex timeout)");
+            Serial.println("[SYS] Critical: SPI Mutex Deadlock on Boot");
         }
     }
 
@@ -83,7 +104,7 @@ bool SystemController::getStatus(StatusMessage& msg) {
     return xQueueReceive(_statusQueue, &msg, 0) == pdTRUE; 
 }
 
-// --- БЕЗОПАСНЫЙ ПРОТОКОЛ (Zero-Copy Parser) ---
+// --- SECURE PROTOCOL PARSER ---
 
 void SystemController::sendJsonSuccess(const char* msg) {
     Serial.printf("{\"status\":\"ok\",\"msg\":\"%s\"}\n", msg);
@@ -96,20 +117,21 @@ void SystemController::sendJsonError(const char* err) {
 void SystemController::sendJsonFileList(const char* path) {
     SpiLock lock(1000);
     if (lock.locked()) {
+        if (!SD.exists(path)) {
+             sendJsonError("Path not found");
+             return;
+        }
         File root = SD.open(path);
         if (!root || !root.isDirectory()) {
-            sendJsonError("Bad path");
+            sendJsonError("Not a directory");
         } else {
             Serial.print("{\"files\":[");
             File file = root.openNextFile();
             bool first = true;
             while (file) {
-                // Защита от зависания при длинном листинге
                 esp_task_wdt_reset(); 
                 if (!first) Serial.print(",");
-                // Используем имя файла осторожно
                 const char* name = file.name();
-                // Пропускаем системные файлы
                 if (name[0] != '.') {
                     Serial.printf("{\"n\":\"%s\",\"s\":%d}", name, file.size());
                     first = false;
@@ -123,45 +145,37 @@ void SystemController::sendJsonFileList(const char* path) {
     }
 }
 
-// Парсер без использования String (No Heap Fragmentation)
+// Optimized non-allocating parser
 void SystemController::parseSerialJson(String& input) {
-    // 1. Быстрая проверка валидности
     input.trim();
-    if (input.length() < 5 || input.charAt(0) != '{' || input.charAt(input.length()-1) != '}') {
-        sendJsonError("Invalid JSON");
-        return;
+    // Basic validation
+    if (input.length() < 5 || input.charAt(0) != '{') {
+        return; // Silent ignore or error
     }
 
-    // 2. Копируем в статический буфер для безопасного парсинга
     char buffer[128];
-    // Защита от переполнения буфера
-    if (input.length() >= sizeof(buffer)) {
+    if (input.length() >= sizeof(buffer) - 1) {
         sendJsonError("Cmd too long");
         return;
     }
-    strcpy(buffer, input.c_str());
 
-    // 3. "Грязный" парсинг без тяжелых библиотек (ищем "CMD":"VALUE")
-    // Приводим к верхнему регистру вручную, чтобы не аллоцировать String
+    strncpy(buffer, input.c_str(), sizeof(buffer) - 1);
+    buffer[sizeof(buffer) - 1] = '\0'; 
+
     for(int i=0; buffer[i]; i++) buffer[i] = toupper((unsigned char)buffer[i]);
 
-    // Ищем ключ
     char* cmdPtr = strstr(buffer, "\"CMD\"");
-    if (!cmdPtr) { sendJsonError("No CMD found"); return; }
+    if (!cmdPtr) return;
 
-    // Ищем значение (пропускаем "CMD" и двоеточие)
     cmdPtr = strchr(cmdPtr, ':');
     if (!cmdPtr) return;
-    cmdPtr++; // Пропускаем :
+    cmdPtr++; 
     
-    // Очистка от кавычек и пробелов
     while(*cmdPtr == ' ' || *cmdPtr == '"') cmdPtr++;
     
-    // Находим конец значения
     char* endPtr = strpbrk(cmdPtr, "\",}");
     if (endPtr) *endPtr = '\0';
 
-    // 4. Диспетчеризация
     if (strcmp(cmdPtr, "SCAN") == 0) {
         processCommand({SystemCommand::CMD_START_SCAN_WIFI, 0});
         sendJsonSuccess("Scan started");
@@ -187,38 +201,49 @@ void SystemController::runWorkerLoop() {
     StatusMessage statusOut; 
     memset(&statusOut, 0, sizeof(StatusMessage));
     
-    // Включаем WDT для этой задачи (3 секунды тайм-аут)
-    esp_task_wdt_init(3, true);
+    esp_task_wdt_init(5, true);
     esp_task_wdt_add(NULL);
 
     for (;;) {
-        // Сброс собаки в главном цикле
         esp_task_wdt_reset();
 
-        // 1. Очередь команд
+        // 1. Queue Processing
         if (xQueueReceive(_commandQueue, &cmd, 0) == pdTRUE) {
             processCommand(cmd);
         }
 
-        // 2. Serial (с защитой от переполнения буфера Serial)
-        if (Serial.available()) {
-            // Читаем с таймаутом, чтобы не висеть вечно
-            String line = Serial.readStringUntil('\n'); 
-            if (line.length() > 0) {
+        // 2. Serial Processing (Non-blocking Fix STAB-01)
+        while (Serial.available()) {
+            char c = Serial.read();
+            if (c == '\n') {
+                g_serialBuffer[g_serialIndex] = '\0'; // Null-terminate
+                String line = String(g_serialBuffer); // Safe wrapper for parser
+                
                 if (line.startsWith("{")) {
                     parseSerialJson(line);
                 } else {
-                    // Legacy Text Mode
+                    // Legacy Text Commands
                     line.trim();
                     if (line == "SCAN") processCommand({SystemCommand::CMD_START_SCAN_WIFI, 0});
                     else if (line == "STOP") processCommand({SystemCommand::CMD_STOP_ATTACK, 0});
-                    else if (line.startsWith("JAM")) processCommand({SystemCommand::CMD_START_NRF_JAM, 40});
-                    Serial.println("OK");
+                    else if (line == "STATUS") Serial.println("OK"); 
+                }
+                
+                // Reset buffer
+                g_serialIndex = 0;
+            } 
+            else {
+                if (g_serialIndex < sizeof(g_serialBuffer) - 1) {
+                    g_serialBuffer[g_serialIndex++] = c;
+                } else {
+                    // Buffer overflow protection: Reset and ignore
+                    g_serialIndex = 0; 
+                    sendJsonError("Serial Buffer Overflow");
                 }
             }
         }
 
-        // 3. Логика движка
+        // 3. Engine Loop
         bool running = false;
         
         if (_currentState == SystemState::ADMIN_MODE) {
@@ -228,7 +253,6 @@ void SystemController::runWorkerLoop() {
         } 
         else if (_activeEngine) {
             running = _activeEngine->loop(statusOut);
-            
             if (!running) {
                 if (_activeEngine == &_wifiEngine && statusOut.state == SystemState::SCAN_COMPLETE) {
                        statusOut.state = SystemState::SCAN_COMPLETE; 
@@ -270,13 +294,11 @@ void SystemController::processCommand(CommandMessage cmd) {
         return;
     }
 
-    // Mutex Logic
     if (_activeEngine != nullptr) {
-        Serial.println("[Err] System BUSY. Please press STOP first.");
+        Serial.println("[Err] System BUSY.");
         return; 
     }
 
-    // Запуск движков
     switch (cmd.cmd) {
         case SystemCommand::CMD_START_SCAN_WIFI: _activeEngine = &_wifiEngine; _wifiEngine.startScan(); break;
         case SystemCommand::CMD_START_DEAUTH: if (_selectedTarget.bssid[0] != 0) { _activeEngine = &_wifiEngine; _wifiEngine.startDeauth(_selectedTarget); } break;

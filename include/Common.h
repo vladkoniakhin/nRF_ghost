@@ -10,16 +10,41 @@ constexpr size_t SPECTRUM_CHANNELS = 128;
 
 enum class SystemState {
     IDLE,
-    MENU_SELECT_BLE, MENU_SELECT_NRF,
-    SCANNING, SCAN_COMPLETE, SCAN_EMPTY,
-    ATTACKING_WIFI, ATTACKING_BEACON, ATTACKING_EVIL_TWIN,
-    ATTACKING_BLE,
-    ATTACKING_NRF, ATTACKING_MOUSEJACK, SNIFFING_NRF,
-    ATTACKING_SUBGHZ, ANALYZING_SUBGHZ,
-    ANALYZING_NRF,
+    
+    // Menus
+    MENU_SELECT_BLE, 
+    MENU_SELECT_NRF,
+    
+    // WiFi States
+    SCANNING, 
+    SCAN_COMPLETE, 
+    SCAN_EMPTY,
+    ATTACKING_WIFI_DEAUTH,  // New: Specific Red Strobe
+    ATTACKING_WIFI_SPAM,    // New: Yellow Blink
+    ATTACKING_EVIL_TWIN,    // New: Purple Static
+    HANDSHAKE_CAPTURED,     // New: Rainbow
+    
+    // Web
     ADMIN_MODE,
+    WEB_CLIENT_CONNECTED,   // New: Cyan Breathe
+    
+    // BLE
+    ATTACKING_BLE,
+    
+    // NRF
+    ATTACKING_NRF,          // Jamming
+    ATTACKING_MOUSEJACK,    // New: Red Flash
+    SNIFFING_NRF,           // New: White Dim
+    ANALYZING_NRF,
+    
+    // Sub-GHz
+    ATTACKING_SUBGHZ_TX,    // New: Orange Static
+    ANALYZING_SUBGHZ_RX,    // New: Blue Blink
+    
+    // System
     PC_CLIENT_MODE,
-    SYS_ERROR 
+    SYS_ERROR,
+    SD_ERROR                // New: Brick Red
 };
 
 enum class InputEvent { NONE, BTN_UP, BTN_DOWN, BTN_SELECT, BTN_BACK };

@@ -1,7 +1,7 @@
 #include "WebPortalManager.h"
 #include "System.h" // Для доступа к g_spiMutex
 
-// Локальный RAII Wrapper для этого файла
+// Локальный RAII Wrapper для безопасной работы с SPI/SD
 struct WebSpiLock {
     WebSpiLock() { _ok = xSemaphoreTake(g_spiMutex, pdMS_TO_TICKS(2000)); }
     ~WebSpiLock() { if (_ok) xSemaphoreGive(g_spiMutex); }
@@ -9,7 +9,7 @@ struct WebSpiLock {
     bool _ok;
 };
 
-// --- ПОЛНЫЙ WEB ИНТЕРФЕЙС v3.0 ---
+// --- ПОЛНЫЙ WEB ИНТЕРФЕЙС v3.0 (SPA) ---
 static const char index_html[] PROGMEM = R"rawliteral(
 <!DOCTYPE html>
 <html>
@@ -110,8 +110,18 @@ void WebPortalManager::start(const char* ssid) {
     char buf[33]; 
     strncpy(buf, ssid, 32); 
     buf[32] = 0;
-    WiFi.softAP(buf);
     
+    // v3.0 Security: WPA2 Password Protection
+    // Пароль жестко задан для надежности в этой версии
+    WiFi.softAP(buf, "ghost1234"); 
+    
+    // v3.0 UX: Detect Client Connection
+    WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info){
+        Serial.println("[Web] Client Connected!");
+        // Здесь можно добавить логику смены цвета LED через очередь событий,
+        // если архитектура SystemController будет расширена.
+    }, ARDUINO_EVENT_WIFI_AP_STACONNECTED);
+
     _dnsServer.start(53, "*", apIP);
 
     // --- ENDPOINTS ---
@@ -144,7 +154,7 @@ void WebPortalManager::start(const char* ssid) {
     // 4. EDITOR API (Write) - RAW Upload Handler
     _server.on("/api/fs/write", HTTP_POST, [](AsyncWebServerRequest *r){ r->send(200); },
     [](AsyncWebServerRequest *r, String filename, size_t index, uint8_t *data, size_t len, bool final){
-        String path = "/badusb.txt"; // Пока хардкод для MVP v3.0
+        String path = "/badusb.txt"; // Пока хардкод для безопасности MVP v3.0
         
         if(!index) {
             WebSpiLock lock;
