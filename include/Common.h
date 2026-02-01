@@ -19,7 +19,7 @@ enum class SystemState {
     ANALYZING_NRF,
     ADMIN_MODE,
     PC_CLIENT_MODE,
-    SYS_ERROR // Fixed collision
+    SYS_ERROR 
 };
 
 enum class InputEvent { NONE, BTN_UP, BTN_DOWN, BTN_SELECT, BTN_BACK };

@@ -36,9 +36,7 @@ private:
     SdManager();
     SdManager(const SdManager&) = delete;
     void operator=(const SdManager&) = delete;
-   
     static void writeTask(void* parameter);
-   
     bool _isMounted;
     bool _isCapturing;
     File _pcapFile;

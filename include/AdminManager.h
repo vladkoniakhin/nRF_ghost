@@ -1,6 +1,6 @@
 #pragma once
 #include "WebPortalManager.h"
-// Wrapper class to fit old architecture calls
+// Wrapper class to fit old architecture calls if needed
 class AdminManager {
 public:
     static AdminManager& getInstance() { static AdminManager i; return i; }
