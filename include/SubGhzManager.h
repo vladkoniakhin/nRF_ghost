@@ -9,21 +9,29 @@ public:
     void setup() override;
     bool loop(StatusMessage& statusOut) override;
     void stop() override;
+    
     void startAnalyzer();
     void startJammer();
     void startCapture();
     void startReplay();
+    
+    // v3.0 Feature: Чтение файлов Flipper Zero
+    void playFlipperFile(const char* path);
 
 private:
     SubGhzManager();
+    
     CC1101* _radio;
     Module* _module;
+    
     bool _isAnalyzing;
     bool _isJamming;
     bool _isCapturing;
     bool _isReplaying;
     bool _isRollingCode;
+    
     float _currentFreq;
+    
     bool analyzeSignal();
     static void IRAM_ATTR isrHandler();
 };
