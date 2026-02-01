@@ -54,7 +54,7 @@
 
 ### Диаграмма соединений
 
-```mermaid
+mermaid
 graph TD
     ESP[ESP32 DevKit V1]
     
