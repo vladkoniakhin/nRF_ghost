@@ -177,7 +177,7 @@ graph TD
 
 1.  Клонируйте репозиторий:
     ```bash
-    git clone [https://github.com/yourusername/nrfbox-pro-v2.git](https://github.com/yourusername/nrfbox-pro-v2.git)
+    git clone https://github.com/vladkoakhin/nRF_ghost.git
     ```
 2.  Откройте папку проекта в VS Code с установленным расширением PlatformIO.
 3.  Дождитесь автоматической загрузки библиотек.
