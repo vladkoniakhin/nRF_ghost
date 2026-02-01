@@ -1,7 +1,15 @@
 #include "WebPortalManager.h"
+#include "System.h" // Для доступа к g_spiMutex
 
-// --- v3.0 Web Assets (Embedded HTML/JS) ---
-// В реальном проекте лучше вынести в файловую систему, но для надежности MVP держим в PROGMEM
+// Локальный RAII Wrapper для этого файла
+struct WebSpiLock {
+    WebSpiLock() { _ok = xSemaphoreTake(g_spiMutex, pdMS_TO_TICKS(2000)); }
+    ~WebSpiLock() { if (_ok) xSemaphoreGive(g_spiMutex); }
+    bool locked() { return _ok; }
+    bool _ok;
+};
+
+// --- ПОЛНЫЙ WEB ИНТЕРФЕЙС v3.0 ---
 static const char index_html[] PROGMEM = R"rawliteral(
 <!DOCTYPE html>
 <html>
@@ -85,9 +93,9 @@ static const char index_html[] PROGMEM = R"rawliteral(
 </html>
 )rawliteral";
 
-WebPortalManager& WebPortalManager::getInstance() {
-    static WebPortalManager instance;
-    return instance;
+WebPortalManager& WebPortalManager::getInstance() { 
+    static WebPortalManager instance; 
+    return instance; 
 }
 
 WebPortalManager::WebPortalManager() : _server(80), _isRunning(false) {}
@@ -108,16 +116,16 @@ void WebPortalManager::start(const char* ssid) {
 
     // --- ENDPOINTS ---
 
-    // 1. UI
+    // 1. UI (Главная страница)
     _server.on("/", HTTP_GET, [](AsyncWebServerRequest *r){ 
         r->send_P(200, "text/html", index_html); 
     });
 
-    // 2. STATUS API (Live Polling)
+    // 2. STATUS API (Оптимизировано по памяти)
     _server.on("/api/status", HTTP_GET, [](AsyncWebServerRequest *r){
-        // В реальном коде данные брать из SystemController::getStatus()
-        // Здесь эмуляция для примера
-        String json = "{\"state\":\"ADMIN_MODE\",\"log\":\"System Ready\",\"mem\":" + String(ESP.getFreeHeap()) + "}";
+        // Создаем статический буфер вместо String concat, чтобы не фрагментировать кучу
+        char json[128];
+        snprintf(json, sizeof(json), "{\"state\":\"ADMIN_MODE\",\"log\":\"System Ready\",\"mem\":%d}", ESP.getFreeHeap());
         r->send(200, "application/json", json);
     });
 
@@ -125,82 +133,82 @@ void WebPortalManager::start(const char* ssid) {
     _server.on("/api/fs/read", HTTP_GET, [](AsyncWebServerRequest *r){
         if (r->hasParam("path")) {
             String path = r->getParam("path")->value();
-            if (xSemaphoreTake(g_spiMutex, 2000)) {
+            WebSpiLock lock; // Защита SPI
+            if (lock.locked()) {
                 if (SD.exists(path)) r->send(SD, path, "text/plain");
                 else r->send(404, "text/plain", "File not found");
-                xSemaphoreGive(g_spiMutex);
             } else r->send(503, "text/plain", "SPI Busy");
         } else r->send(400);
     });
 
-    // 4. EDITOR API (Write)
-    // Используем raw upload handler для сохранения
+    // 4. EDITOR API (Write) - RAW Upload Handler
     _server.on("/api/fs/write", HTTP_POST, [](AsyncWebServerRequest *r){ r->send(200); },
     [](AsyncWebServerRequest *r, String filename, size_t index, uint8_t *data, size_t len, bool final){
-        // Хардкод пути для MVP, в идеале брать из параметров
-        String path = "/badusb.txt"; 
+        String path = "/badusb.txt"; // Пока хардкод для MVP v3.0
         
         if(!index) {
-            if(xSemaphoreTake(g_spiMutex, 2000)) {
-                // Если файл существует - удаляем перед перезаписью
+            WebSpiLock lock;
+            if(lock.locked()) {
                 if(SD.exists(path)) SD.remove(path);
                 r->_tempFile = SD.open(path, FILE_WRITE);
-                xSemaphoreGive(g_spiMutex);
             }
         }
-        if(r->_tempFile && xSemaphoreTake(g_spiMutex, 200)) {
-            r->_tempFile.write(data, len);
-            xSemaphoreGive(g_spiMutex);
+        if(r->_tempFile) {
+             WebSpiLock lock;
+             if(lock.locked()) r->_tempFile.write(data, len);
         }
         if(final && r->_tempFile) {
-            if(xSemaphoreTake(g_spiMutex, 200)) {
-                r->_tempFile.close();
-                xSemaphoreGive(g_spiMutex);
-            }
+            WebSpiLock lock;
+            if(lock.locked()) r->_tempFile.close();
         }
     });
 
-    // 5. LEGACY FILE MANAGER (List/DL/Del)
+    // 5. FILE MANAGER (JSON List)
     _server.on("/list", HTTP_GET, [](AsyncWebServerRequest *r){
         String json = "[";
-        if (xSemaphoreTake(g_spiMutex, 2000)) {
+        WebSpiLock lock;
+        if (lock.locked()) {
             File root = SD.open("/");
             if(root) {
                 File file = root.openNextFile();
                 bool first = true;
                 while(file){
-                    if(!first) json += ",";
+                    // Пропускаем системные файлы
                     String name = String(file.name());
-                    if (name.startsWith("/")) name = name.substring(1);
-                    json += "{\"n\":\"" + name + "\",\"s\":\"" + String(file.size()) + "\"}";
-                    first = false;
+                    if (!name.startsWith("/.")) {
+                        if(!first) json += ",";
+                        if (name.startsWith("/")) name = name.substring(1);
+                        json += "{\"n\":\"" + name + "\",\"s\":\"" + String(file.size()) + "\"}";
+                        first = false;
+                    }
                     file = root.openNextFile();
                 }
             }
-            xSemaphoreGive(g_spiMutex);
         }
         json += "]";
         r->send(200, "application/json", json);
     });
 
+    // 6. DOWNLOAD
     _server.on("/dl", HTTP_GET, [](AsyncWebServerRequest *r){
         if(r->hasParam("n")){
             String path = "/" + r->getParam("n")->value();
-            if (xSemaphoreTake(g_spiMutex, 2000)) {
+            WebSpiLock lock;
+            if (lock.locked()) {
                 r->send(SD, path, "application/octet-stream");
-                xSemaphoreGive(g_spiMutex);
             } else r->send(503);
         }
     });
 
+    // 7. DELETE
     _server.on("/del", HTTP_DELETE, [](AsyncWebServerRequest *r){
          if(r->hasParam("n")){
             String path = "/" + r->getParam("n")->value();
-            if (xSemaphoreTake(g_spiMutex, 2000)) {
+            WebSpiLock lock;
+            if (lock.locked()) {
                 SD.remove(path);
-                xSemaphoreGive(g_spiMutex);
                 r->send(200);
-            }
+            } else r->send(503);
          }
     });
 
@@ -220,7 +228,4 @@ void WebPortalManager::stop() {
 
 void WebPortalManager::processDns() { if (_isRunning) _dnsServer.processNextRequest(); }
 bool WebPortalManager::isRunning() const { return _isRunning; }
-
-void WebPortalManager::saveCreds(const char* ssid, const char* pass) {
-    // Legacy placeholder
-}
+void WebPortalManager::saveCreds(const char* ssid, const char* pass) {} // Заглушка

@@ -58,7 +58,7 @@ void DisplayManager::render() {
             if(_currentStatus.isReplaying) drawPopup("Replaying..."); else drawPopup("Jamming 433..."); break;
         case SystemState::MENU_SELECT_BLE: drawBleMenu(); break;
         case SystemState::MENU_SELECT_NRF: drawNrfMenu(); break;
-        case SystemState::ADMIN_MODE: drawPopup("Admin: 192.168.4.1"); break;
+        case SystemState::ADMIN_MODE: drawAdminScreen(); break;
         default: drawAttackDetails(); break;
     }
     display.sendBuffer(); _isDirty = false;
@@ -112,6 +112,16 @@ void DisplayManager::drawAttackDetails() {
     display.drawStr(0,30,_currentStatus.logMsg); 
     if(_currentStatus.rollingCodeDetected) display.drawStr(0,50,"! ROLLING CODE !"); 
 }
+
+// v3.0 UX Fix: Понятный экран админки
+void DisplayManager::drawAdminScreen() {
+    display.setFont(u8g2_font_5x8_tf);
+    display.drawStr(0, 25, "SSID: nRF_Admin");
+    display.drawStr(0, 35, "IP:   192.168.4.1");
+    display.drawStr(0, 50, "Connect & Open Browser");
+    display.setFont(u8g2_font_6x10_tf);
+}
+
 void DisplayManager::updateStatus(const StatusMessage& msg) { _currentStatus = msg; _isDirty = true; }
-void DisplayManager::showSplashScreen() { display.clearBuffer(); display.drawStr(30,30,"nRFBox Pro v2"); display.sendBuffer(); _isDirty=true; }
+void DisplayManager::showSplashScreen() { display.clearBuffer(); display.drawStr(30,30,"nRF Ghost v3"); display.sendBuffer(); _isDirty=true; }
 void DisplayManager::setTargetList(const std::vector<TargetAP>& list) { _scanResults = list; _isDirty = true; }

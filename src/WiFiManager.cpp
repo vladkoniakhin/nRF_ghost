@@ -81,6 +81,7 @@ bool WiFiAttackManager::loop(StatusMessage& statusOut) {
         WebPortalManager::getInstance().processDns();
         statusOut.state = SystemState::ATTACKING_EVIL_TWIN;
         snprintf(statusOut.logMsg, MAX_LOG_MSG, "Phishing: %s", _currentTarget.ssid);
+        // Небольшая задержка, чтобы не вешать ядро веб-сервером
         vTaskDelay(pdMS_TO_TICKS(5));
         return true; 
     }

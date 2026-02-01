@@ -47,4 +47,6 @@ private:
     void drawSpectrum();
     void drawBleMenu();
     void drawNrfMenu();
+    // v3.0 UX Fix: Отображение данных админки
+    void drawAdminScreen();
 };
