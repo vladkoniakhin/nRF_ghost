@@ -54,54 +54,78 @@
 
 ### Диаграмма соединений
 
-    mermaid
-    graph TD
+```mermaid
+graph TD
+    %% Определение узлов
     ESP[ESP32 DevKit V1]
     
-    %% Power
-    subgraph Power [Питание]
-    BAT((Li-Po 3.7V)) --> CHARGER[TP4056]
-    CHARGER --> BOOST[MT3608 Boost 5V]
-    BOOST --> ESP_VIN[ESP32 5V/VIN]
+    %% Питание
+    subgraph Power_Circuit [Цепь Питания]
+        direction TB
+        BAT((Li-Po 3.7V)) -->|VCC| TP4056[TP4056 Charger]
+        TP4056 -->|OUT+| MT3608[MT3608 Boost 5V]
+        MT3608 -->|5V| ESP_VIN[ESP32 Pin VIN]
+        
+        %% Делитель напряжения
+        BAT -->|R1 100k| DIV[Делитель]
+        DIV -->|R2 100k| GND_REF[GND]
+        DIV -.->|Center 2.1V| ADC[GPIO 34]
     end
 
-    %% SPI Bus
-    subgraph SPI_Bus [Общая шина SPI]
-    SCK[SCK / GPIO 18]
-    MISO[MISO / GPIO 19]
-    MOSI[MOSI / GPIO 23]
+    %% Общая шина SPI
+    subgraph Shared_SPI [Общая шина SPI]
+        SCK_Line[SCK / GPIO 18]
+        MISO_Line[MISO / GPIO 19]
+        MOSI_Line[MOSI / GPIO 23]
     end
 
-    %% Connections
-    ESP --> SCK
-    ESP --> MISO
-    ESP --> MOSI
+    %% Подключения к ESP
+    ESP ==> SCK_Line
+    ESP ==> MISO_Line
+    ESP ==> MOSI_Line
 
-    SCK --- CC1101
-    MISO --- CC1101
-    MOSI --- CC1101
-    ESP -- CS: 27 --> CC1101
+    %% Модули
+    subgraph Modules [Радиомодули и SD]
+        %% CC1101
+        CC1101[CC1101 Sub-GHz]
+        SCK_Line --- CC1101
+        MISO_Line --- CC1101
+        MOSI_Line --- CC1101
+        ESP -- CS: 27 --> CC1101
+        CC1101 -- GDO0: 15 --> ESP
 
-    SCK --- NRF_A
-    MISO --- NRF_A
-    MOSI --- NRF_A
-    ESP -- CS: 17 --> NRF_A
+        %% NRF A
+        NRF_A[NRF24L01 'A']
+        SCK_Line --- NRF_A
+        MISO_Line --- NRF_A
+        MOSI_Line --- NRF_A
+        ESP -- CSN: 17 --> NRF_A
+        ESP -- CE: 5 --> NRF_A
 
-    SCK --- NRF_B
-    MISO --- NRF_B
-    MOSI --- NRF_B
-    ESP -- CS: 4 --> NRF_B
+        %% NRF B
+        NRF_B[NRF24L01 'B']
+        SCK_Line --- NRF_B
+        MISO_Line --- NRF_B
+        MOSI_Line --- NRF_B
+        ESP -- CSN: 4 --> NRF_B
+        ESP -- CE: 16 --> NRF_B
 
-    SCK --- SD_Card
-    MISO --- SD_Card
-    MOSI --- SD_Card
-    ESP -- CS: 13 --> SD_Card
+        %% SD Card
+        SD[SD Card Reader]
+        SCK_Line --- SD
+        MISO_Line --- SD
+        MOSI_Line --- SD
+        ESP -- CS: 13 --> SD
+    end
 
-    %% I2C
-    ESP -- SDA: 21 --> OLED
-    ESP -- SCL: 22 --> OLED
-
-    
+    %% I2C Дисплей
+    subgraph I2C_Bus [Дисплей]
+        OLED[OLED SSD1306]
+        ESP -- SDA: 21 --> OLED
+        ESP -- SCL: 22 --> OLED
+    end
+```
+   
 ## ⚡ Схема Питания
 
 Для стабильной работы радиомодулей (особенно при глушении) питания от USB или 3.3V регулятора ESP32 может не хватить.
