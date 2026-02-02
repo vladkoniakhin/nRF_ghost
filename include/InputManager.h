@@ -1,25 +1,53 @@
-#pragma once
-#include "Common.h"
+#include "InputManager.h"
+#include "Config.h"
 
-class InputManager {
-public:
-    static InputManager& getInstance();
-    
-    void init();
-    InputEvent poll(); 
+InputManager& InputManager::getInstance() { static InputManager i; return i; }
 
-private:
-    InputManager() = default;
-    InputManager(const InputManager&) = delete;
-    void operator=(const InputManager&) = delete;
-    
-    // Config: Быстрый отклик + Автоповтор
-    const uint32_t DEBOUNCE_MS = 50;       // Уменьшено с 200 до 50 для отзывчивости
-    const uint32_t HOLD_TIME_MS = 500;     // Время удержания до начала автоповтора
-    const uint32_t REPEAT_RATE_MS = 100;   // Скорость прокрутки при удержании
+void InputManager::init() {
+    pinMode(Config::PIN_BTN_UP, INPUT_PULLUP);
+    pinMode(Config::PIN_BTN_DOWN, INPUT_PULLUP);
+    pinMode(Config::PIN_BTN_SELECT, INPUT_PULLUP);
+    pinMode(Config::PIN_BTN_LEFT, INPUT_PULLUP);
+    pinMode(Config::PIN_BTN_RIGHT, INPUT_PULLUP);
+}
 
-    uint32_t _lastPressTime = 0;
-    uint32_t _btnDownTime = 0;
-    int _lastBtnState = -1; // -1: None
-    bool _holding = false;
-};
+InputEvent InputManager::poll() {
+    uint32_t now = millis();
+    int currentBtn = -1;
+
+    if (digitalRead(Config::PIN_BTN_SELECT) == LOW) currentBtn = 0;
+    else if (digitalRead(Config::PIN_BTN_UP) == LOW) currentBtn = 1;
+    else if (digitalRead(Config::PIN_BTN_DOWN) == LOW) currentBtn = 2;
+    else if (digitalRead(Config::PIN_BTN_LEFT) == LOW) currentBtn = 3;
+    else if (digitalRead(Config::PIN_BTN_RIGHT) == LOW) currentBtn = 4;
+
+    if (currentBtn != -1) {
+        if (_lastBtnState != currentBtn) {
+            // New Press
+            if (now - _lastPressTime > DEBOUNCE_MS) {
+                _lastPressTime = now;
+                _btnDownTime = now;
+                _lastBtnState = currentBtn;
+                _holding = false;
+                
+                if (currentBtn == 0) return InputEvent::BTN_SELECT;
+                if (currentBtn == 1) return InputEvent::BTN_UP;
+                if (currentBtn == 2) return InputEvent::BTN_DOWN;
+                if (currentBtn == 3) return InputEvent::BTN_BACK;
+            }
+        } else {
+            // Holding Logic
+            if (!_holding && (now - _btnDownTime > HOLD_TIME_MS)) { _holding = true; }
+            
+            if (_holding && (now - _lastPressTime > REPEAT_RATE_MS)) {
+                _lastPressTime = now;
+                if (currentBtn == 1) return InputEvent::BTN_UP;
+                if (currentBtn == 2) return InputEvent::BTN_DOWN;
+            }
+        }
+    } else {
+        _lastBtnState = -1;
+        _holding = false;
+    }
+    return InputEvent::NONE;
+}

@@ -32,6 +32,10 @@ private:
     int _submenuIndex = 0;
     StatusMessage _currentStatus;
     std::vector<TargetAP> _scanResults;
+
+    // Переменная для сглаживания показаний батареи
+    long _batteryFilterAccum = 0;
+    bool _batteryInit = false;
     
     const std::vector<std::string> _menuItems = {
         "WiFi Scan", "WiFi Deauth", "Beacon Spam", "Evil Twin",
@@ -47,6 +51,5 @@ private:
     void drawSpectrum();
     void drawBleMenu();
     void drawNrfMenu();
-    // v3.0 UX Fix: Отображение данных админки
     void drawAdminScreen();
 };
