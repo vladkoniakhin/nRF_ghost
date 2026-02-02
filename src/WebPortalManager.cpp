@@ -9,7 +9,6 @@ struct WebSpiLock {
     bool _ok;
 };
 
-// Basic check to prevent going out of root
 bool validatePath(String& path) {
     if (path.indexOf("..") != -1) return false;
     if (path.indexOf("//") != -1) return false;
@@ -18,15 +17,15 @@ bool validatePath(String& path) {
     return true;
 }
 
-// WebSocket Event Handler (Minimal)
-void onEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type, void *arg, uint8_t *data, size_t len) {}
+void onEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type, void *arg, uint8_t *data, size_t len) {
+    // Optional: Log connections
+}
 
-// --- FULL HTML ---
 static const char index_html[] PROGMEM = R"rawliteral(
 <!DOCTYPE html>
 <html>
 <head>
- <title>nRF Ghost v5.1</title>
+ <title>nRF Ghost v5.2</title>
  <meta name="viewport" content="width=device-width, initial-scale=1">
  <style>
   body { font-family: monospace; background: #0d0d0d; color: #00ff00; margin: 0; padding: 15px; }
@@ -47,7 +46,7 @@ static const char index_html[] PROGMEM = R"rawliteral(
  </style>
 </head>
 <body>
- <h2>Ghost v5.1 <span id="status" class="warn">[CONNECTING]</span></h2>
+ <h2>Ghost v5.2 <span id="status" class="warn">[CONNECTING]</span></h2>
 
  <div class="card">
   <h3>Live Spectrum & Status</h3>
@@ -160,9 +159,8 @@ WebPortalManager& WebPortalManager::getInstance() {
 WebPortalManager::WebPortalManager() : _server(80), _ws("/ws"), _isRunning(false) {}
 
 void WebPortalManager::start(const char* ignore) {
-    if (_isRunning) stop();
+    if (_isRunning) return;
     
-    // Config Integration
     String ssid = ConfigManager::getInstance().getWifiSsid();
     String pass = ConfigManager::getInstance().getWifiPass();
     
@@ -175,25 +173,14 @@ void WebPortalManager::start(const char* ignore) {
     
     _dnsServer.start(53, "*", apIP);
 
-    // WebSocket
     _ws.onEvent(onEvent);
     _server.addHandler(&_ws);
 
-    // --- ENDPOINTS ---
-
     _server.on("/", HTTP_GET, [](AsyncWebServerRequest *r){ r->send_P(200, "text/html", index_html); });
 
-    _server.on("/api/stop", HTTP_GET, [](AsyncWebServerRequest *r){
-        r->send(200);
-    });
+    _server.on("/api/stop", HTTP_GET, [](AsyncWebServerRequest *r){ r->send(200); });
+    _server.on("/api/run_script", HTTP_GET, [](AsyncWebServerRequest *r){ r->send(200); });
 
-    _server.on("/api/run_script", HTTP_GET, [](AsyncWebServerRequest *r){
-        if(r->hasParam("path")) { 
-            r->send(200); 
-        } else r->send(400);
-    });
-
-    // LIST FILES (Fully Unlocked)
     _server.on("/list", HTTP_GET, [](AsyncWebServerRequest *r){
         String json = "[";
         WebSpiLock lock;
@@ -218,34 +205,26 @@ void WebPortalManager::start(const char* ignore) {
         r->send(200, "application/json", json);
     });
 
-    // DOWNLOAD FILE (Fully Unlocked)
     _server.on("/dl", HTTP_GET, [](AsyncWebServerRequest *r){
         if(r->hasParam("n")){
             String path = "/" + r->getParam("n")->value();
             if (!validatePath(path)) { r->send(400); return; }
-            
             WebSpiLock lock;
-            if (lock.locked()) {
-                r->send(SD, path, "application/octet-stream");
-            } else r->send(503);
+            if (lock.locked()) r->send(SD, path, "application/octet-stream");
+            else r->send(503);
         }
     });
 
-    // DELETE FILE (Fully Unlocked)
     _server.on("/del", HTTP_DELETE, [](AsyncWebServerRequest *r){
          if(r->hasParam("n")){
             String path = "/" + r->getParam("n")->value();
             if (!validatePath(path)) { r->send(400); return; }
-            
             WebSpiLock lock;
-            if (lock.locked()) {
-                SD.remove(path);
-                r->send(200);
-            } else r->send(503);
+            if (lock.locked()) { SD.remove(path); r->send(200); }
+            else r->send(503);
          }
     });
 
-    // UPLOAD FILE
     _server.on("/api/fs/write", HTTP_POST, [](AsyncWebServerRequest *r){ r->send(200); },
     [](AsyncWebServerRequest *r, String filename, size_t index, uint8_t *data, size_t len, bool final){
         String path = "/script.txt"; 
@@ -261,14 +240,20 @@ void WebPortalManager::start(const char* ignore) {
 }
 
 void WebPortalManager::stop() {
-    if (_isRunning) { _dnsServer.stop(); _server.end(); WiFi.softAPdisconnect(true); _isRunning = false; }
+    if (_isRunning) { 
+        _dnsServer.stop(); 
+        _server.end(); 
+        WiFi.softAPdisconnect(true); 
+        _isRunning = false; 
+    }
 }
+
+static char g_wsBuffer[128];
 
 void WebPortalManager::broadcastStatus(const char* state, int mem) {
     if (!_isRunning) return;
-    char json[128];
-    snprintf(json, sizeof(json), "{\"t\":\"s\",\"l\":\"%s\",\"m\":%d}", state, mem);
-    _ws.textAll(json);
+    snprintf(g_wsBuffer, sizeof(g_wsBuffer), "{\"t\":\"s\",\"l\":\"%s\",\"m\":%d}", state, mem);
+    _ws.textAll(g_wsBuffer);
 }
 
 void WebPortalManager::broadcastSpectrum(uint8_t* data, size_t len) {

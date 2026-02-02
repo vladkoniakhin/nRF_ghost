@@ -45,10 +45,13 @@ SystemController::SystemController() : _currentState(SystemState::IDLE), _active
 void SystemController::init() {
     g_spiMutex = xSemaphoreCreateMutex();
     
-    // 1. LED Init
+    // WDT Init (Moved here to run once)
+    esp_task_wdt_init(5, true);
+    esp_task_wdt_add(NULL);
+    
     LedManager::getInstance().init();
 
-    // 2. SD Check
+    // Critical SD Check
     {
         SpiLock lock(2000);
         if (lock.locked()) {
@@ -68,21 +71,21 @@ void SystemController::init() {
         }
     }
 
-    // 3. Load Config & Scripts
+    // Load Config & Scripts
     ConfigManager::getInstance().init();
     ScriptManager::getInstance().init();
 
-    // 4. Other subsystems
+    // Other subsystems
     SettingsManager::getInstance().init();
     UpdateManager::performUpdateIfAvailable();
     
-    // 5. Engines
+    // Engines Init
     _wifiEngine.setup();
     BleManager::getInstance().setup();
     NrfManager::getInstance().setup();
     SubGhzManager::getInstance().setup();
     
-    Serial.println("[SYS] System Ready. v5.1 Unlocked");
+    Serial.println("[SYS] System Ready. v5.2 Unlocked");
 }
 
 void SystemController::stopCurrentTask() {
@@ -147,15 +150,16 @@ void SystemController::sendJsonFileList(const char* path) {
 }
 
 void SystemController::parseSerialJson(String& input) {
-    input.trim();
-    if (input.length() < 5 || input.charAt(0) != '{') return;
-
-    char buffer[128];
-    if (input.length() >= sizeof(buffer) - 1) {
+    // Buffer overflow protection
+    if (input.length() >= 128) {
         sendJsonError("Cmd too long");
         return;
     }
 
+    input.trim();
+    if (input.length() < 5 || input.charAt(0) != '{') return;
+
+    char buffer[128];
     strncpy(buffer, input.c_str(), sizeof(buffer) - 1);
     buffer[sizeof(buffer) - 1] = '\0'; 
 
@@ -200,22 +204,18 @@ void SystemController::runWorkerLoop() {
     StatusMessage statusOut; 
     memset(&statusOut, 0, sizeof(StatusMessage));
     
-    esp_task_wdt_init(5, true);
-    esp_task_wdt_add(NULL);
-
+    // Watchdog is initialized in init() now to prevent re-init error
+    
     uint32_t lastWsPush = 0;
 
     for (;;) {
         esp_task_wdt_reset();
 
-        // 1. WebSocket Push Logic (v5.0 Realtime)
+        // 1. WebSocket Push Logic
         if (millis() - lastWsPush > 100) { 
             if (_currentState == SystemState::ADMIN_MODE) {
                 WebPortalManager::getInstance().processDns(); 
                 WebPortalManager::getInstance().broadcastStatus(statusOut.logMsg, ESP.getFreeHeap());
-                
-                // Optional: Broadcast spectrum if analyzing
-                // if (_activeEngine == &SubGhzManager::getInstance()) ...
             }
             lastWsPush = millis();
         }
@@ -283,20 +283,17 @@ void SystemController::runWorkerLoop() {
 }
 
 void SystemController::processCommand(CommandMessage cmd) {
-    // 1. Selection (Non-blocking)
     if (cmd.cmd == SystemCommand::CMD_SELECT_TARGET) {
         auto results = _wifiEngine.getScanResults();
         if (cmd.param1 >= 0 && cmd.param1 < (int)results.size()) _selectedTarget = results[cmd.param1];
         return;
     }
 
-    // 2. Stop Priority
     if (cmd.cmd == SystemCommand::CMD_STOP_ATTACK) {
         stopCurrentTask();
         return;
     }
 
-    // 3. Admin Mode
     if (cmd.cmd == SystemCommand::CMD_START_ADMIN_MODE) {
         if (_activeEngine != nullptr) {
             Serial.println("[Err] Stop current task first!");
@@ -307,13 +304,12 @@ void SystemController::processCommand(CommandMessage cmd) {
         return;
     }
 
-    // 4. Busy Check
     if (_activeEngine != nullptr) {
         Serial.println("[Err] System BUSY.");
         return; 
     }
 
-    // 5. Dispatcher (COMPLETE LIST)
+    // DISPATCHER
     switch (cmd.cmd) {
         case SystemCommand::CMD_START_SCAN_WIFI: 
             _activeEngine = &_wifiEngine; 
@@ -381,7 +377,6 @@ void SystemController::processCommand(CommandMessage cmd) {
 
         case SystemCommand::CMD_START_SUBGHZ_TX: 
             _activeEngine = &SubGhzManager::getInstance(); 
-            // Logic: param1 == 1 is BruteForce, else Replay file
             if (cmd.param1 == 1) {
                 SubGhzManager::getInstance().startBruteForce();
             } else {

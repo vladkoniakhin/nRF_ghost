@@ -36,7 +36,7 @@ SubGhzManager::SubGhzManager() :
     _isAnalyzing(false), _isJamming(false), _isCapturing(false), 
     _isReplaying(false), _isBruteForcing(false), 
     _isRollingCode(false), _currentFreq(433.92), _currentModulation(Modulation::OOK),
-    _producerTaskHandle(nullptr)
+    _producerTaskHandle(nullptr), _shouldStop(false)
 {
     _rmtQueue = xQueueCreate(10, sizeof(RmtBlock));
 }
@@ -68,10 +68,19 @@ void SubGhzManager::stop() {
     
     detachInterrupt(digitalPinToInterrupt(Config::PIN_CC_GDO0));
     
+    // Soft Stop Logic
     if (_producerTaskHandle != nullptr) {
-        vTaskDelete(_producerTaskHandle);
-        _producerTaskHandle = nullptr;
+        _shouldStop = true;
+        uint32_t start = millis();
+        while (_producerTaskHandle != nullptr && millis() - start < 1000) {
+            vTaskDelay(10);
+        }
+        if (_producerTaskHandle != nullptr) {
+            vTaskDelete(_producerTaskHandle);
+            _producerTaskHandle = nullptr;
+        }
     }
+    _shouldStop = false;
     xQueueReset(_rmtQueue);
 
     SubGhzLock lock;
@@ -85,39 +94,40 @@ void SubGhzManager::setModulation(Modulation mod, float dev) {
     _currentModulation = mod;
 }
 
-// --- BRUTE FORCE TASK (CAME 12-bit) ---
+// --- BRUTE FORCE TASK ---
 void SubGhzManager::bruteForceTask(void* param) {
     SubGhzManager* mgr = (SubGhzManager*)param;
     
     {
         SubGhzLock lock;
-        if (!lock.locked()) { vTaskDelete(NULL); return; }
+        if (!lock.locked()) { 
+            mgr->_producerTaskHandle = nullptr; vTaskDelete(NULL); return; 
+        }
         mgr->_radio->setFrequency(433.92);
         mgr->_radio->setOOK(true);
         mgr->_radio->transmitDirect();
     }
 
-    uint16_t Te = 320; 
+    uint16_t Te = Config::CAME_BIT_PERIOD;
     
     for (uint16_t code = 0; code < 4096; code++) {
+        if (mgr->_shouldStop) break;
+        esp_task_wdt_reset();
+
         RmtBlock block;
         block.itemCount = 0;
         
         for (int b = 11; b >= 0; b--) {
             bool bit = (code >> b) & 1;
-            
-            if (bit == 0) {
-                block.items[block.itemCount++] = {{{ (uint16_t)Te, 1, (uint16_t)(2*Te), 0 }}};
-            } else {
-                block.items[block.itemCount++] = {{{ (uint16_t)(2*Te), 1, (uint16_t)Te, 0 }}};
-            }
+            if (bit == 0) block.items[block.itemCount++] = {{{ (uint16_t)Te, 1, (uint16_t)(2*Te), 0 }}};
+            else block.items[block.itemCount++] = {{{ (uint16_t)(2*Te), 1, (uint16_t)Te, 0 }}};
         }
         
         block.items[block.itemCount++] = {{{ 0, 0, (uint16_t)(36*Te), 0 }}};
         
         xQueueSend(mgr->_rmtQueue, &block, portMAX_DELAY);
-        xQueueSend(mgr->_rmtQueue, &block, portMAX_DELAY);
-        xQueueSend(mgr->_rmtQueue, &block, portMAX_DELAY);
+        xQueueSend(mgr->_rmtQueue, &block, portMAX_DELAY); 
+        xQueueSend(mgr->_rmtQueue, &block, portMAX_DELAY); 
         
         vTaskDelay(10); 
     }
@@ -125,19 +135,20 @@ void SubGhzManager::bruteForceTask(void* param) {
     RmtBlock end; end.itemCount = 0;
     xQueueSend(mgr->_rmtQueue, &end, portMAX_DELAY);
     
+    mgr->_producerTaskHandle = nullptr; 
     vTaskDelete(NULL);
 }
 
 void SubGhzManager::startBruteForce() {
     stop();
     _isBruteForcing = true;
-    xTaskCreatePinnedToCore(bruteForceTask, "BruteForce", 4096, this, 1, &_producerTaskHandle, 1);
+    _shouldStop = false;
+    xTaskCreatePinnedToCore(bruteForceTask, "BruteForce", Config::SUBGHZ_STACK_SIZE, this, 1, &_producerTaskHandle, 1);
 }
 
-// --- RMT PRODUCER TASK ---
+// --- PRODUCER TASK ---
 void SubGhzManager::producerTask(void* param) {
     SubGhzManager* mgr = (SubGhzManager*)param;
-    
     float freq = 433.92;
     float deviation = 0.0;
     Modulation mod = Modulation::OOK;
@@ -145,9 +156,9 @@ void SubGhzManager::producerTask(void* param) {
 
     {
         SubGhzLock lock;
-        if (!lock.locked()) { vTaskDelete(NULL); return; }
+        if (!lock.locked()) { mgr->_producerTaskHandle = nullptr; vTaskDelete(NULL); return; }
         File file = SD.open(g_playbackFilePath);
-        if (!file) { vTaskDelete(NULL); return; }
+        if (!file) { mgr->_producerTaskHandle = nullptr; vTaskDelete(NULL); return; }
 
         char line[128];
         while(file.available()) {
@@ -155,7 +166,7 @@ void SubGhzManager::producerTask(void* param) {
             line[len] = 0;
             if (strncmp(line, "Frequency:", 10) == 0) freq = (float)atol(line + 10) / 1000000.0;
             if (strncmp(line, "Preset:", 7) == 0) {
-                if (strstr(line, "FSK")) { mod = Modulation::FSK2; deviation = 47.6; } 
+                if (strstr(line, "FSK")) { mod = Modulation::FSK2; deviation = Config::FSK_DEVIATION_DEFAULT; } 
                 else { mod = Modulation::OOK; }
             }
             if (strncmp(line, "RAW_Data:", 9) == 0) { dataStart = file.position(); break; }
@@ -173,6 +184,9 @@ void SubGhzManager::producerTask(void* param) {
     char line[128]; bool inData = false;
 
     while (true) {
+        if (mgr->_shouldStop) break;
+        esp_task_wdt_reset();
+
         size_t len = 0;
         {
             SubGhzLock lock;
@@ -180,6 +194,7 @@ void SubGhzManager::producerTask(void* param) {
             if (!file.available()) break;
             len = file.readBytesUntil('\n', line, 127);
         }
+        
         line[len] = 0;
         if (strncmp(line, "RAW_Data:", 9) == 0) inData = true;
         
@@ -210,7 +225,9 @@ void SubGhzManager::producerTask(void* param) {
     
     if (block.itemCount > 0) xQueueSend(mgr->_rmtQueue, &block, portMAX_DELAY);
     block.itemCount = 0; xQueueSend(mgr->_rmtQueue, &block, portMAX_DELAY);
+    
     { SubGhzLock lock; file.close(); }
+    mgr->_producerTaskHandle = nullptr;
     vTaskDelete(NULL);
 }
 
@@ -218,7 +235,8 @@ void SubGhzManager::playFlipperFile(const char* path) {
     if (!SD.exists(path)) return;
     stop(); _isReplaying = true;
     strncpy(g_playbackFilePath, path, 63);
-    xTaskCreatePinnedToCore(producerTask, "SubGhzProd", 8192, this, 1, &_producerTaskHandle, 1);
+    _shouldStop = false;
+    xTaskCreatePinnedToCore(producerTask, "SubGhzProd", Config::SUBGHZ_STACK_SIZE, this, 1, &_producerTaskHandle, 1);
 }
 
 bool SubGhzManager::loop(StatusMessage& out) {
