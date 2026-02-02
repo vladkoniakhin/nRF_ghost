@@ -18,14 +18,14 @@ bool validatePath(String& path) {
 }
 
 void onEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type, void *arg, uint8_t *data, size_t len) {
-    // Optional: Log connections
+    // No limits logic here per user request
 }
 
 static const char index_html[] PROGMEM = R"rawliteral(
 <!DOCTYPE html>
 <html>
 <head>
- <title>nRF Ghost v5.2</title>
+ <title>nRF Ghost v5.3</title>
  <meta name="viewport" content="width=device-width, initial-scale=1">
  <style>
   body { font-family: monospace; background: #0d0d0d; color: #00ff00; margin: 0; padding: 15px; }
@@ -46,7 +46,7 @@ static const char index_html[] PROGMEM = R"rawliteral(
  </style>
 </head>
 <body>
- <h2>Ghost v5.2 <span id="status" class="warn">[CONNECTING]</span></h2>
+ <h2>Ghost v5.3 <span id="status" class="warn">[CONNECTING]</span></h2>
 
  <div class="card">
   <h3>Live Spectrum & Status</h3>

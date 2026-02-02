@@ -23,14 +23,17 @@ public:
     void startJammer();
     void startCapture();
     
-    // Новая атака: Перебор кодов
+    // Атака перебором (BruteForce)
     void startBruteForce(); 
     
+    // Воспроизведение файла
     void playFlipperFile(const char* path);
     bool isReplaying() const; 
 
 private:
     SubGhzManager();
+    SubGhzManager(const SubGhzManager&) = delete;
+    void operator=(const SubGhzManager&) = delete;
     
     CC1101* _radio;
     Module* _module;
@@ -43,6 +46,9 @@ private:
     bool _isRollingCode;
     float _currentFreq;
     Modulation _currentModulation;
+    
+    // FIX: Добавлена недостающая переменная
+    volatile bool _shouldStop;
     
     QueueHandle_t _rmtQueue;
     TaskHandle_t _producerTaskHandle;

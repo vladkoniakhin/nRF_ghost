@@ -68,7 +68,7 @@ void SubGhzManager::stop() {
     
     detachInterrupt(digitalPinToInterrupt(Config::PIN_CC_GDO0));
     
-    // Soft Stop Logic
+    // Soft Stop Logic (Vital for stability)
     if (_producerTaskHandle != nullptr) {
         _shouldStop = true;
         uint32_t start = millis();
@@ -125,15 +125,19 @@ void SubGhzManager::bruteForceTask(void* param) {
         
         block.items[block.itemCount++] = {{{ 0, 0, (uint16_t)(36*Te), 0 }}};
         
-        xQueueSend(mgr->_rmtQueue, &block, portMAX_DELAY);
-        xQueueSend(mgr->_rmtQueue, &block, portMAX_DELAY); 
-        xQueueSend(mgr->_rmtQueue, &block, portMAX_DELAY); 
+        // FIX: Use timeout instead of portMAX_DELAY to allow stop
+        if (xQueueSend(mgr->_rmtQueue, &block, pdMS_TO_TICKS(100)) != pdTRUE) {
+            if (mgr->_shouldStop) break;
+        }
+        // Repeat
+        xQueueSend(mgr->_rmtQueue, &block, pdMS_TO_TICKS(10)); 
+        xQueueSend(mgr->_rmtQueue, &block, pdMS_TO_TICKS(10)); 
         
         vTaskDelay(10); 
     }
     
     RmtBlock end; end.itemCount = 0;
-    xQueueSend(mgr->_rmtQueue, &end, portMAX_DELAY);
+    xQueueSend(mgr->_rmtQueue, &end, pdMS_TO_TICKS(100));
     
     mgr->_producerTaskHandle = nullptr; 
     vTaskDelete(NULL);
@@ -211,11 +215,22 @@ void SubGhzManager::producerTask(void* param) {
                         block.items[block.itemCount++] = {{{32767, level, 32767, level}}}; 
                         duration -= 65534;
                         if (duration > 65534) duration = 0;
-                        if(block.itemCount >= 64) { xQueueSend(mgr->_rmtQueue, &block, portMAX_DELAY); block.itemCount = 0; }
+                        if(block.itemCount >= 64) { 
+                            // FIX: Timeout check
+                            if (xQueueSend(mgr->_rmtQueue, &block, pdMS_TO_TICKS(50)) != pdTRUE) {
+                                if (mgr->_shouldStop) break;
+                            }
+                            block.itemCount = 0; 
+                        }
                         if (duration == 0) break;
                     }
                     if (duration > 0) block.items[block.itemCount++] = {{{ (uint16_t)duration, (uint16_t)level, 0, 0 }}};
-                    if(block.itemCount >= 64) { xQueueSend(mgr->_rmtQueue, &block, portMAX_DELAY); block.itemCount = 0; }
+                    if(block.itemCount >= 64) { 
+                        if (xQueueSend(mgr->_rmtQueue, &block, pdMS_TO_TICKS(50)) != pdTRUE) {
+                             if (mgr->_shouldStop) break;
+                        }
+                        block.itemCount = 0; 
+                    }
                 }
                 token = strtok(NULL, " ");
             }
@@ -223,8 +238,8 @@ void SubGhzManager::producerTask(void* param) {
         vTaskDelay(1);
     }
     
-    if (block.itemCount > 0) xQueueSend(mgr->_rmtQueue, &block, portMAX_DELAY);
-    block.itemCount = 0; xQueueSend(mgr->_rmtQueue, &block, portMAX_DELAY);
+    if (block.itemCount > 0) xQueueSend(mgr->_rmtQueue, &block, pdMS_TO_TICKS(100));
+    block.itemCount = 0; xQueueSend(mgr->_rmtQueue, &block, pdMS_TO_TICKS(100));
     
     { SubGhzLock lock; file.close(); }
     mgr->_producerTaskHandle = nullptr;

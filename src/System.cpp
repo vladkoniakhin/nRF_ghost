@@ -85,7 +85,7 @@ void SystemController::init() {
     NrfManager::getInstance().setup();
     SubGhzManager::getInstance().setup();
     
-    Serial.println("[SYS] System Ready. v5.2 Unlocked");
+    Serial.println("[SYS] System Ready. v5.3 Chaos");
 }
 
 void SystemController::stopCurrentTask() {
@@ -204,8 +204,6 @@ void SystemController::runWorkerLoop() {
     StatusMessage statusOut; 
     memset(&statusOut, 0, sizeof(StatusMessage));
     
-    // Watchdog is initialized in init() now to prevent re-init error
-    
     uint32_t lastWsPush = 0;
 
     for (;;) {
@@ -225,20 +223,21 @@ void SystemController::runWorkerLoop() {
             processCommand(cmd);
         }
 
-        // 3. Serial Handling
+        // 3. Serial Handling (Optimized)
         while (Serial.available()) {
             char c = Serial.read();
             if (c == '\n') {
                 g_serialBuffer[g_serialIndex] = '\0'; 
-                String line = String(g_serialBuffer);
                 
-                if (line.startsWith("{")) {
+                // Avoid Creating String if not JSON
+                if (g_serialBuffer[0] == '{') {
+                    String line = String(g_serialBuffer);
                     parseSerialJson(line);
                 } else {
-                    line.trim();
-                    if (line == "SCAN") processCommand({SystemCommand::CMD_START_SCAN_WIFI, 0});
-                    else if (line == "STOP") processCommand({SystemCommand::CMD_STOP_ATTACK, 0});
-                    else if (line == "STATUS") Serial.println("OK"); 
+                    // Simple text check
+                    if (strncmp(g_serialBuffer, "SCAN", 4) == 0) processCommand({SystemCommand::CMD_START_SCAN_WIFI, 0});
+                    else if (strncmp(g_serialBuffer, "STOP", 4) == 0) processCommand({SystemCommand::CMD_STOP_ATTACK, 0});
+                    else if (strncmp(g_serialBuffer, "STATUS", 6) == 0) Serial.println("OK");
                 }
                 g_serialIndex = 0;
             } 
