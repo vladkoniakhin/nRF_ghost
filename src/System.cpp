@@ -8,16 +8,13 @@
 #include "SubGhzManager.h"
 #include "WebPortalManager.h"
 #include "ConfigManager.h" 
-#include "ScriptManager.h" // v5.0: Scripting Engine Integration
+#include "ScriptManager.h"
 #include <esp_task_wdt.h>
 
 SemaphoreHandle_t g_spiMutex = nullptr;
-
-// Статический буфер для Serial, чтобы не фрагментировать кучу
 static char g_serialBuffer[256]; 
 static uint16_t g_serialIndex = 0;
 
-// Локальный RAII Wrapper для мьютекса SPI
 class SpiLock {
 public:
     SpiLock(uint32_t timeoutMs = 1000) {
@@ -48,10 +45,10 @@ SystemController::SystemController() : _currentState(SystemState::IDLE), _active
 void SystemController::init() {
     g_spiMutex = xSemaphoreCreateMutex();
     
-    // 1. Инициализация LED
+    // 1. LED Init
     LedManager::getInstance().init();
 
-    // 2. Проверка SD карты (Критично для Config и Scripts)
+    // 2. SD Check
     {
         SpiLock lock(2000);
         if (lock.locked()) {
@@ -60,7 +57,6 @@ void SystemController::init() {
                 Serial.println("[SYS] CRITICAL: SD Card not found!");
                 StatusMessage err; 
                 err.state = SystemState::SD_ERROR;
-                // Вечный цикл ошибки, если нет SD
                 while(true) {
                     LedManager::getInstance().setStatus(err);
                     LedManager::getInstance().update();
@@ -72,21 +68,21 @@ void SystemController::init() {
         }
     }
 
-    // 3. Загрузка конфигурации
+    // 3. Load Config & Scripts
     ConfigManager::getInstance().init();
+    ScriptManager::getInstance().init();
 
-    // 4. Инициализация подсистем v5.0
-    ScriptManager::getInstance().init(); 
+    // 4. Other subsystems
     SettingsManager::getInstance().init();
     UpdateManager::performUpdateIfAvailable();
     
-    // 5. Инициализация движков атак
+    // 5. Engines
     _wifiEngine.setup();
     BleManager::getInstance().setup();
     NrfManager::getInstance().setup();
     SubGhzManager::getInstance().setup();
     
-    Serial.println("[SYS] System Ready. v5.0 Reactive");
+    Serial.println("[SYS] System Ready. v5.1 Unlocked");
 }
 
 void SystemController::stopCurrentTask() {
@@ -95,7 +91,6 @@ void SystemController::stopCurrentTask() {
         _activeEngine = nullptr; 
     }
     
-    // v5.0: Остановка скриптов
     ScriptManager::getInstance().stop();
     
     if (_currentState == SystemState::ADMIN_MODE) {
@@ -114,7 +109,7 @@ bool SystemController::getStatus(StatusMessage& msg) {
     return xQueueReceive(_statusQueue, &msg, 0) == pdTRUE; 
 }
 
-// --- SERIAL JSON PARSER (Full Implementation) ---
+// --- JSON SERIAL HELPERS ---
 
 void SystemController::sendJsonSuccess(const char* msg) {
     Serial.printf("{\"status\":\"ok\",\"msg\":\"%s\"}\n", msg);
@@ -135,10 +130,9 @@ void SystemController::sendJsonFileList(const char* path) {
             File file = root.openNextFile();
             bool first = true;
             while (file) {
-                esp_task_wdt_reset(); // Сброс WDT при длинном листинге
+                esp_task_wdt_reset(); 
                 if (!first) Serial.print(",");
                 const char* name = file.name();
-                // Скрываем скрытые файлы (начинающиеся с точки)
                 if (name[0] != '.') {
                     Serial.printf("{\"n\":\"%s\",\"s\":%d}", name, file.size());
                     first = false;
@@ -162,14 +156,11 @@ void SystemController::parseSerialJson(String& input) {
         return;
     }
 
-    // Копируем во временный буфер
     strncpy(buffer, input.c_str(), sizeof(buffer) - 1);
     buffer[sizeof(buffer) - 1] = '\0'; 
 
-    // UpperCase in-place для упрощения парсинга
     for(int i=0; buffer[i]; i++) buffer[i] = toupper((unsigned char)buffer[i]);
 
-    // Ручной парсинг JSON (быстрее и легче, чем библиотека для простых команд)
     char* cmdPtr = strstr(buffer, "\"CMD\"");
     if (!cmdPtr) return;
 
@@ -182,7 +173,6 @@ void SystemController::parseSerialJson(String& input) {
     char* endPtr = strpbrk(cmdPtr, "\",}");
     if (endPtr) *endPtr = '\0';
 
-    // Роутинг команд
     if (strcmp(cmdPtr, "SCAN") == 0) {
         processCommand({SystemCommand::CMD_START_SCAN_WIFI, 0});
         sendJsonSuccess("Scan started");
@@ -203,14 +193,13 @@ void SystemController::parseSerialJson(String& input) {
     }
 }
 
-// --- MAIN WORKER LOOP ---
+// --- MAIN LOOP ---
 
 void SystemController::runWorkerLoop() {
     CommandMessage cmd; 
     StatusMessage statusOut; 
     memset(&statusOut, 0, sizeof(StatusMessage));
     
-    // Включаем Watchdog для этой задачи (5 секунд)
     esp_task_wdt_init(5, true);
     esp_task_wdt_add(NULL);
 
@@ -219,41 +208,33 @@ void SystemController::runWorkerLoop() {
     for (;;) {
         esp_task_wdt_reset();
 
-        // 1. v5.0: WebSocket Push (Real-Time Updates)
-        // Отправляем данные только в режиме админки и не чаще 10 раз в секунду
+        // 1. WebSocket Push Logic (v5.0 Realtime)
         if (millis() - lastWsPush > 100) { 
             if (_currentState == SystemState::ADMIN_MODE) {
-                // Обслуживание клиентов WS (очистка мертвых сокетов)
                 WebPortalManager::getInstance().processDns(); 
-                
-                // Отправка статуса и памяти
                 WebPortalManager::getInstance().broadcastStatus(statusOut.logMsg, ESP.getFreeHeap());
                 
-                // Если идет анализ спектра, отправляем бинарные данные
-                if (_activeEngine == &SubGhzManager::getInstance()) { // Упрощенная проверка
-                     // В реальном коде можно добавить флаг isAnalyzing в StatusMessage
-                     // WebPortalManager::getInstance().broadcastSpectrum(statusOut.spectrum, 128);
-                }
+                // Optional: Broadcast spectrum if analyzing
+                // if (_activeEngine == &SubGhzManager::getInstance()) ...
             }
             lastWsPush = millis();
         }
 
-        // 2. Обработка очереди команд
+        // 2. Command Queue
         if (xQueueReceive(_commandQueue, &cmd, 0) == pdTRUE) {
             processCommand(cmd);
         }
 
-        // 3. Обработка Serial (без блокировок)
+        // 3. Serial Handling
         while (Serial.available()) {
             char c = Serial.read();
             if (c == '\n') {
-                g_serialBuffer[g_serialIndex] = '\0'; // Null-terminate
+                g_serialBuffer[g_serialIndex] = '\0'; 
                 String line = String(g_serialBuffer);
                 
                 if (line.startsWith("{")) {
                     parseSerialJson(line);
                 } else {
-                    // Legacy Text Support
                     line.trim();
                     if (line == "SCAN") processCommand({SystemCommand::CMD_START_SCAN_WIFI, 0});
                     else if (line == "STOP") processCommand({SystemCommand::CMD_STOP_ATTACK, 0});
@@ -265,13 +246,13 @@ void SystemController::runWorkerLoop() {
                 if (g_serialIndex < sizeof(g_serialBuffer) - 1) {
                     g_serialBuffer[g_serialIndex++] = c;
                 } else {
-                    g_serialIndex = 0; // Сброс при переполнении
+                    g_serialIndex = 0; 
                     sendJsonError("Buffer Overflow");
                 }
             }
         }
 
-        // 4. Выполнение активной задачи
+        // 4. Engine Loop
         bool running = false;
         
         if (_currentState == SystemState::ADMIN_MODE) {
@@ -283,7 +264,6 @@ void SystemController::runWorkerLoop() {
             running = _activeEngine->loop(statusOut);
             
             if (!running) {
-                // Если задача (скан WiFi) завершилась сама
                 if (_activeEngine == &_wifiEngine && statusOut.state == SystemState::SCAN_COMPLETE) {
                        statusOut.state = SystemState::SCAN_COMPLETE; 
                        _currentState = SystemState::SCAN_COMPLETE;
@@ -303,40 +283,38 @@ void SystemController::runWorkerLoop() {
 }
 
 void SystemController::processCommand(CommandMessage cmd) {
-    // 1. Non-blocking commands (выбор цели)
+    // 1. Selection (Non-blocking)
     if (cmd.cmd == SystemCommand::CMD_SELECT_TARGET) {
         auto results = _wifiEngine.getScanResults();
         if (cmd.param1 >= 0 && cmd.param1 < (int)results.size()) _selectedTarget = results[cmd.param1];
         return;
     }
 
-    // 2. STOP Priority (остановка всего)
+    // 2. Stop Priority
     if (cmd.cmd == SystemCommand::CMD_STOP_ATTACK) {
         stopCurrentTask();
         return;
     }
 
-    // 3. Admin Mode Check
+    // 3. Admin Mode
     if (cmd.cmd == SystemCommand::CMD_START_ADMIN_MODE) {
         if (_activeEngine != nullptr) {
             Serial.println("[Err] Stop current task first!");
             return; 
         }
         _currentState = SystemState::ADMIN_MODE;
-        // Данные для AP берутся из ConfigManager внутри WebPortalManager
         WebPortalManager::getInstance().start(""); 
         return;
     }
 
-    // 4. Mutex Logic (Single Active Task) - защита от коллизий
+    // 4. Busy Check
     if (_activeEngine != nullptr) {
         Serial.println("[Err] System BUSY.");
         return; 
     }
 
-    // 5. Dispatcher - Полный список всех поддерживаемых модулей
+    // 5. Dispatcher (COMPLETE LIST)
     switch (cmd.cmd) {
-        // --- WIFI COMMANDS ---
         case SystemCommand::CMD_START_SCAN_WIFI: 
             _activeEngine = &_wifiEngine; 
             _wifiEngine.startScan(); 
@@ -361,13 +339,11 @@ void SystemController::processCommand(CommandMessage cmd) {
             _wifiEngine.startBeaconSpam(); 
             break;
             
-        // --- BLE COMMANDS ---
         case SystemCommand::CMD_START_BLE_SPOOF: 
             _activeEngine = &BleManager::getInstance(); 
             BleManager::getInstance().startSpoof((BleSpoofType)cmd.param1); 
             break;
             
-        // --- NRF24 COMMANDS ---
         case SystemCommand::CMD_START_NRF_JAM: 
             _activeEngine = &NrfManager::getInstance(); 
             NrfManager::getInstance().startJamming((uint8_t)cmd.param1); 
@@ -388,7 +364,6 @@ void SystemController::processCommand(CommandMessage cmd) {
             NrfManager::getInstance().startSniffing(); 
             break;
             
-        // --- SUB-GHZ COMMANDS (Updated for v5.0) ---
         case SystemCommand::CMD_START_SUBGHZ_SCAN: 
             _activeEngine = &SubGhzManager::getInstance(); 
             SubGhzManager::getInstance().startAnalyzer(); 
@@ -406,9 +381,12 @@ void SystemController::processCommand(CommandMessage cmd) {
 
         case SystemCommand::CMD_START_SUBGHZ_TX: 
             _activeEngine = &SubGhzManager::getInstance(); 
-            // Используем новый RMT/FSK Streaming метод
-            // Файл для воспроизведения по умолчанию (в будущем можно передавать через param1)
-            SubGhzManager::getInstance().playFlipperFile("/test.sub"); 
+            // Logic: param1 == 1 is BruteForce, else Replay file
+            if (cmd.param1 == 1) {
+                SubGhzManager::getInstance().startBruteForce();
+            } else {
+                SubGhzManager::getInstance().playFlipperFile("/test.sub"); 
+            }
             break;
             
         default: break;
