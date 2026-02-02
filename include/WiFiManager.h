@@ -37,6 +37,9 @@ private:
     bool _capturedHandshake;
     uint8_t _packetBuffer[128];
     
+    // FIX v5.7: Счетчик попыток для предотвращения вечного цикла сканирования
+    int _scanRetries; 
+    
     void buildDeauthPacket();
     void buildBeaconPacket(const char* ssid);
     static void snifferHandler(void* buf, wifi_promiscuous_pkt_type_t type);

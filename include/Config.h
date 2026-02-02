@@ -8,11 +8,14 @@ namespace Config {
     // --- PINS (MH-ET LIVE ESP32) ---
     constexpr uint8_t PIN_OLED_SDA = 21;
     constexpr uint8_t PIN_OLED_SCL = 22;
+    
+    // Кнопки управления (4 Button Layout v6.0)
     constexpr uint8_t PIN_BTN_UP       = 26;
     constexpr uint8_t PIN_BTN_DOWN     = 32;
-    constexpr uint8_t PIN_BTN_SELECT   = 33;
-    constexpr uint8_t PIN_BTN_LEFT     = 25;
-    constexpr uint8_t PIN_BTN_RIGHT    = 2;
+    constexpr uint8_t PIN_BTN_SELECT   = 33; // Center / Action
+    constexpr uint8_t PIN_BTN_LEFT     = 25; // Back / Stop
+    // PIN_BTN_RIGHT (GPIO 2) is FREE for IR/Expansion
+
     constexpr uint8_t PIN_NEOPIXEL     = 14;
     constexpr uint8_t NEOPIXEL_COUNT   = 1;
 
@@ -32,7 +35,8 @@ namespace Config {
     constexpr uint8_t PIN_BAT_ADC   = 34;
 
     // --- SYSTEM CONSTANTS ---
-    constexpr size_t PCAP_QUEUE_SIZE = 64;
+    // Increased queue size for better packet capture stability
+    constexpr size_t PCAP_QUEUE_SIZE = 128; 
     constexpr size_t MAX_PACKET_LEN  = 256;
     constexpr uint32_t SPI_SPEED_MHZ = 10000000;
     constexpr uint32_t SERIAL_BAUD   = 115200;
@@ -43,8 +47,7 @@ namespace Config {
     constexpr float SUBGHZ_SCAN_STEP = 0.05;
     constexpr uint32_t NRF_JAMMING_DELAY_US = 20;
     
-    // v5.2 Refactoring Constants
     constexpr float FSK_DEVIATION_DEFAULT = 47.6;
     constexpr uint16_t CAME_BIT_PERIOD = 320;
-    constexpr uint32_t SUBGHZ_STACK_SIZE = 10240; // Increased stack
+    constexpr uint32_t SUBGHZ_STACK_SIZE = 10240;
 }

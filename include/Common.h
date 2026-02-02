@@ -10,43 +10,30 @@ constexpr size_t SPECTRUM_CHANNELS = 128;
 
 enum class SystemState {
     IDLE,
-    
-    // Menus (UI States)
     MENU_SELECT_BLE, 
     MENU_SELECT_NRF,
-    
-    // WiFi States
     SCANNING, 
     SCAN_COMPLETE, 
     SCAN_EMPTY,
-    ATTACKING_WIFI_DEAUTH,  // Red Strobe
-    ATTACKING_WIFI_SPAM,    // Yellow Blink
-    ATTACKING_EVIL_TWIN,    // Purple Static
-    HANDSHAKE_CAPTURED,     // Rainbow
-    
-    // Web
+    ATTACKING_WIFI_DEAUTH,
+    ATTACKING_WIFI_SPAM, 
+    ATTACKING_EVIL_TWIN,
+    HANDSHAKE_CAPTURED,
     ADMIN_MODE,
-    WEB_CLIENT_CONNECTED,   // Cyan Breathe
-    
-    // BLE
-    ATTACKING_BLE,          // Blue Breathe
-    
-    // NRF
-    ATTACKING_NRF,          // Jamming (Red Strobe)
-    ATTACKING_MOUSEJACK,    // Red Flash
-    SNIFFING_NRF,           // White Dim
+    WEB_CLIENT_CONNECTED,
+    ATTACKING_BLE,
+    ATTACKING_NRF,
+    ATTACKING_MOUSEJACK,
+    SNIFFING_NRF,
     ANALYZING_NRF,
-    
-    // Sub-GHz
-    ATTACKING_SUBGHZ_TX,    // Orange Static
-    ANALYZING_SUBGHZ_RX,    // Blue Blink
-    
-    // System
+    ATTACKING_SUBGHZ_TX,
+    ANALYZING_SUBGHZ_RX,
     PC_CLIENT_MODE,
     SYS_ERROR,
-    SD_ERROR                // Brick Red Static
+    SD_ERROR
 };
 
+// CLEANED: Только 4 физические кнопки (Right removed)
 enum class InputEvent { NONE, BTN_UP, BTN_DOWN, BTN_SELECT, BTN_BACK };
 
 enum class SystemCommand {

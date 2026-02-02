@@ -3,10 +3,9 @@
 #include "Config.h"
 #include "ScriptManager.h"
 #include <esp_task_wdt.h>
+#include <FS.h>
+#include <SD.h>
 
-// FIX: Переменные в IRAM (DRAM) для быстрого доступа из ISR
-// __attribute__((section(".noinit"))) или просто volatile
-// Главное - они не должны быть в PSRAM (если она есть)
 volatile uint16_t g_subGhzBuffer[Config::RAW_BUFFER_SIZE]; 
 volatile size_t g_subGhzIndex = 0;
 volatile uint32_t g_subGhzLastTime = 0;
@@ -17,6 +16,41 @@ static char g_playbackFilePath[64];
 #define RMT_TX_CHANNEL RMT_CHANNEL_0
 #define RMT_CLK_DIV 80 
 
+// FIX v5.7: Функция сохранения захваченного сигнала
+// Теперь пользователь не теряет данные при нажатии Back
+void saveLastCapture() {
+    if (g_subGhzIndex < 10) return; // Слишком короткий сигнал (шум)
+    
+    // Берем мьютекс для записи на SD
+    if (xSemaphoreTake(g_spiMutex, pdMS_TO_TICKS(500))) {
+        // Удаляем старый файл, если был
+        if (SD.exists("/last_capture.sub")) SD.remove("/last_capture.sub");
+        
+        File f = SD.open("/last_capture.sub", FILE_WRITE);
+        if (f) {
+            // Формат Flipper Zero RAW
+            f.println("Filetype: Flipper SubGhz RAW File");
+            f.println("Version: 1");
+            f.println("Frequency: 433920000");
+            f.println("Preset: FuriHalSubGhzPresetOok650Async");
+            f.println("Protocol: RAW");
+            f.print("RAW_Data: ");
+            
+            for(size_t i=0; i<g_subGhzIndex; i++) {
+                f.print(g_subGhzBuffer[i]);
+                f.print(" ");
+                // Делаем переносы строк для читаемости
+                if (i > 0 && i % 20 == 0) {
+                    f.print("\nRAW_Data: ");
+                }
+            }
+            f.println();
+            f.close();
+        }
+        xSemaphoreGive(g_spiMutex);
+    }
+}
+
 struct SubGhzLock {
     SubGhzLock() { _ok = xSemaphoreTake(g_spiMutex, pdMS_TO_TICKS(1000)); }
     ~SubGhzLock() { if (_ok) xSemaphoreGive(g_spiMutex); }
@@ -24,7 +58,6 @@ struct SubGhzLock {
     bool _ok;
 };
 
-// FIX: IRAM_ATTR для обработчика прерываний
 void IRAM_ATTR SubGhzManager::isrHandler() {
     if (g_subGhzCaptureDone || g_subGhzIndex >= Config::RAW_BUFFER_SIZE) return;
     
@@ -32,9 +65,8 @@ void IRAM_ATTR SubGhzManager::isrHandler() {
     uint32_t d = now - g_subGhzLastTime; 
     g_subGhzLastTime = now;
     
-    // FIX: Безопасное приведение типов (не кастить > 65535)
     if (d > 50) {
-        if (d > 65535) d = 65535; // Clamp value
+        if (d > 65535) d = 65535;
         g_subGhzBuffer[g_subGhzIndex++] = (uint16_t)d;
     }
 }
@@ -74,6 +106,8 @@ void SubGhzManager::setup() {
 }
 
 void SubGhzManager::stop() {
+    bool wasCapturing = _isCapturing; // Запоминаем, был ли захват
+    
     _isAnalyzing = false; _isJamming = false; 
     _isCapturing = false; _isReplaying = false; _isBruteForcing = false;
     
@@ -82,11 +116,9 @@ void SubGhzManager::stop() {
     if (_producerTaskHandle != nullptr) {
         _shouldStop = true;
         uint32_t start = millis();
-        // Ждем пока задача сама выйдет
         while (_producerTaskHandle != nullptr && millis() - start < 1000) {
             vTaskDelay(10);
         }
-        // Если зависла - убиваем
         if (_producerTaskHandle != nullptr) {
             vTaskDelete(_producerTaskHandle);
             _producerTaskHandle = nullptr;
@@ -97,6 +129,12 @@ void SubGhzManager::stop() {
 
     SubGhzLock lock;
     if(lock.locked() && _radio) _radio->standby();
+    
+    // FIX v5.7: Автосохранение дампа
+    // Если мы были в режиме Capture и что-то поймали (>10 сэмплов), сохраняем.
+    if (wasCapturing && g_subGhzIndex > 10) {
+        saveLastCapture();
+    }
 }
 
 void SubGhzManager::setModulation(Modulation mod, float dev) {
@@ -106,7 +144,6 @@ void SubGhzManager::setModulation(Modulation mod, float dev) {
     _currentModulation = mod;
 }
 
-// --- BRUTE FORCE TASK ---
 void SubGhzManager::bruteForceTask(void* param) {
     SubGhzManager* mgr = (SubGhzManager*)param;
     
@@ -136,7 +173,6 @@ void SubGhzManager::bruteForceTask(void* param) {
         }
         block.items[block.itemCount++] = {{{ 0, 0, (uint16_t)(36*Te), 0 }}};
         
-        // Timeout вместо бесконечного ожидания
         if (xQueueSend(mgr->_rmtQueue, &block, pdMS_TO_TICKS(100)) != pdTRUE) {
             if (mgr->_shouldStop) break;
         }
@@ -160,7 +196,6 @@ void SubGhzManager::startBruteForce() {
     xTaskCreatePinnedToCore(bruteForceTask, "BruteForce", Config::SUBGHZ_STACK_SIZE, this, 1, &_producerTaskHandle, 1);
 }
 
-// --- PRODUCER TASK ---
 void SubGhzManager::producerTask(void* param) {
     SubGhzManager* mgr = (SubGhzManager*)param;
     float freq = 433.92;
