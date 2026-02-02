@@ -1,11 +1,12 @@
 #include "LedManager.h"
+#include "SettingsManager.h" // FIX: Подключаем менеджер настроек
 
 LedManager& LedManager::getInstance() { static LedManager i; return i; }
 
 LedManager::LedManager() : 
     _pixels(Config::NEOPIXEL_COUNT, Config::PIN_NEOPIXEL, NEO_GRB + NEO_KHZ800), 
     _currentState(SystemState::IDLE),
-    _lastState(SystemState::IDLE), // New init
+    _lastState(SystemState::IDLE), 
     _handshakeCaptured(false),
     _rollingCode(false),
     _lastUpdate(0),
@@ -25,18 +26,25 @@ void LedManager::setStatus(const StatusMessage& msg) {
     _handshakeCaptured = msg.handshakeCaptured;
     _rollingCode = msg.rollingCodeDetected;
     
-    // FIX: State Change Detection
     if (_currentState != _lastState) {
         _lastState = _currentState;
-        _lastUpdate = 0; // Force immediate update
+        _lastUpdate = 0; 
         _blinkState = false;
         _animStep = 0;
         _pixels.clear(); 
-        _pixels.show(); // Clear artifact
+        _pixels.show(); 
     }
 }
 
 void LedManager::update() {
+    // FIX v6.2: Stealth Mode Check
+    // Если в настройках LED отключен — принудительно гасим и выходим.
+    if (!SettingsManager::getInstance().getLedEnabled()) {
+        _pixels.clear();
+        _pixels.show();
+        return;
+    }
+
     if (_handshakeCaptured) { runRainbow(); return; }
     if (_rollingCode) { runBlink(255, 100, 0, 200); return; }
 

@@ -2,7 +2,9 @@
 #include "System.h"
 
 SdManager& SdManager::getInstance() { static SdManager i; return i; }
-SdManager::SdManager() : _isMounted(false), _isCapturing(false), _fileIndex(0) { _packetQueue = xQueueCreate(Config::PCAP_QUEUE_SIZE, sizeof(CapturedPacket)); }
+SdManager::SdManager() : _isMounted(false), _isCapturing(false), _fileIndex(0) { 
+    _packetQueue = xQueueCreate(Config::PCAP_QUEUE_SIZE, sizeof(CapturedPacket)); 
+}
 
 void SdManager::init() {
     if(xSemaphoreTake(g_spiMutex, 1000)) {
@@ -32,19 +34,51 @@ void SdManager::stopCapture() {
 }
 
 bool SdManager::enqueuePacketFromISR(const uint8_t* b, uint16_t l) {
-    if(!_isMounted||!_isCapturing) return false;
-    CapturedPacket p; p.timestamp=millis(); p.length=(l>256)?256:l; memcpy(p.data,b,p.length);
-    BaseType_t w=pdFALSE; xQueueSendFromISR(_packetQueue, &p, &w); return w==pdTRUE;
+    if(!_isMounted || !_isCapturing) return false;
+    
+    CapturedPacket p; 
+    p.timestamp = millis(); 
+    p.length = (l > 256) ? 256 : l; 
+    memcpy(p.data, b, p.length);
+    
+    BaseType_t w = pdFALSE; 
+    // xQueueSendFromISR не блокирует прерывание. 
+    // Если очередь полна, пакет просто дропается.
+    if(xQueueSendFromISR(_packetQueue, &p, &w) == pdTRUE) {
+        return (w == pdTRUE);
+    } else {
+        // Queue full -> Drop packet silently to save CPU
+        return false;
+    }
 }
 
 void SdManager::writeTask(void* p) {
-    SdManager* s=(SdManager*)p; CapturedPacket k;
+    SdManager* s = (SdManager*)p; 
+    CapturedPacket k;
+    
     for(;;) {
+        // Ждем пакет из очереди
         if(xQueueReceive(s->_packetQueue, &k, portMAX_DELAY)) {
-            if(s->_pcapFile && xSemaphoreTake(g_spiMutex, 5)) {
-                PcapPacketHeader h; h.ts_sec=k.timestamp/1000; h.ts_usec=(k.timestamp%1000)*1000; h.incl_len=k.length; h.orig_len=k.length;
-                s->_pcapFile.write((uint8_t*)&h,sizeof(h)); s->_pcapFile.write(k.data,k.length);
-                xSemaphoreGive(g_spiMutex);
+            if(s->_pcapFile && s->_isCapturing) {
+                // Пытаемся взять SPI мьютекс. Если занят (экран рисует), ждем немного.
+                if(xSemaphoreTake(g_spiMutex, 10)) {
+                    PcapPacketHeader h; 
+                    h.ts_sec = k.timestamp / 1000; 
+                    h.ts_usec = (k.timestamp % 1000) * 1000; 
+                    h.incl_len = k.length; 
+                    h.orig_len = k.length;
+                    
+                    s->_pcapFile.write((uint8_t*)&h, sizeof(h)); 
+                    s->_pcapFile.write(k.data, k.length);
+                    
+                    // Flush не делаем каждый раз для скорости, система сама сбросит буфер
+                    xSemaphoreGive(g_spiMutex);
+                } else {
+                    // Если мьютекс занят долго, данные теряются? 
+                    // Нет, мы просто не записали их в файл сейчас, но они уже извлечены из очереди.
+                    // Придется выкинуть этот пакет, чтобы не тормозить.
+                    // В реальном RTOS мы бы вернули его в очередь, но здесь проще дропнуть.
+                }
             }
         }
     }

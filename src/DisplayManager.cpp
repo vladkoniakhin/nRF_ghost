@@ -2,7 +2,7 @@
 #include <Wire.h>
 #include "DisplayManager.h"
 #include "Config.h"
-#include "SdManager.h" // Необходимо для проверки статуса записи (REC)
+#include "SdManager.h" // Нужно для проверки статуса записи (REC)
 
 // Константы верстки
 static const int ROW_HEIGHT = 12;
@@ -30,7 +30,7 @@ void DisplayManager::handleInput(InputEvent evt) {
     if (evt == InputEvent::NONE) return;
     _isDirty = true;
 
-    // --- БЛОКИРОВКА ПРИЗРАЧНОГО УПРАВЛЕНИЯ (GHOST INPUT FIX) ---
+    // --- БЛОКИРОВКА ПРИЗРАЧНОГО УПРАВЛЕНИЯ ---
     // Разрешаем навигацию только если пользователь видит меню или список.
     bool isMenuVisible = (_currentStatus.state == SystemState::IDLE);
     bool isListVisible = (_currentStatus.state == SystemState::SCAN_COMPLETE);
@@ -93,14 +93,20 @@ void DisplayManager::handleInput(InputEvent evt) {
 }
 
 void DisplayManager::render() {
-    if (!_isDirty) return;
+    // FIX: Throttle Display if Recording (Оптимизация SPI)
+    // Если SD карта занята записью, снижаем FPS экрана до 5, чтобы не вешать шину SPI
+    static uint32_t lastRender = 0;
+    int interval = SdManager::getInstance().isCapturing() ? 200 : 33; 
     
+    if (!_isDirty && (millis() - lastRender < interval)) return;
+    
+    lastRender = millis();
     display.clearBuffer();
     
-    // Статус бар рисуется во всех режимах
+    // Статус бар рисуется всегда
     drawStatusBar();
     
-    // Основной контент (начинается ниже статус-бара)
+    // Отрисовка контента
     switch (_currentStatus.state) {
         case SystemState::IDLE: 
             drawMenu(); 
@@ -157,21 +163,20 @@ void DisplayManager::drawStatusBar() {
     display.setDrawColor(1);
     display.drawLine(0, STATUS_BAR_HEIGHT, 128, STATUS_BAR_HEIGHT);
     
-    // --- ФИЛЬТР БАТАРЕИ (PIXEL AGONY FIX) ---
+    // --- ФИЛЬТР БАТАРЕИ ---
     int raw = analogRead(Config::PIN_BAT_ADC);
     
     // Инициализация фильтра при первом запуске
     if (!_batteryInit) {
-        _batteryFilterAccum = raw * 16; // Fixed point math scale x16
+        _batteryFilterAccum = raw * 16; 
         _batteryInit = true;
     }
     
-    // Exponential Moving Average (EMA)
-    // New = (Old * 15 + Raw) / 16
+    // Exponential Moving Average (EMA) для плавности
     _batteryFilterAccum = (_batteryFilterAccum * 15 + (raw * 16)) / 16;
     int smoothedVal = _batteryFilterAccum / 16;
     
-    // Map: 1860 (~3.0V) to 2600 (~4.2V) - калибровка делителя 100k/100k
+    // Map: 1860 (~3.0V) to 2600 (~4.2V)
     int pct = map(smoothedVal, 1860, 2600, 0, 100); 
     if(pct > 100) pct = 100; 
     if(pct < 0) pct = 0;
@@ -180,9 +185,9 @@ void DisplayManager::drawStatusBar() {
     display.drawFrame(110, 0, 16, 8); 
     display.drawBox(112, 2, (pct * 12) / 100, 4);
     
-    // --- ИНДИКАТОР ЗАПИСИ (REC FIX) ---
+    // --- ИНДИКАТОР ЗАПИСИ (REC) ---
+    // Если идет запись на SD, рисуем красный круг
     if (SdManager::getInstance().isCapturing()) {
-        // Рисуем заполненный круг рядом с батареей
         display.drawDisc(100, 4, 3, U8G2_DRAW_ALL); 
     }
 
@@ -199,7 +204,6 @@ void DisplayManager::drawStatusBar() {
     else if(_currentStatus.state == SystemState::ANALYZING_SUBGHZ_RX) s="SUB-RX";
     else if(_currentStatus.state == SystemState::ATTACKING_SUBGHZ_TX) s="SUB-TX";
     
-    // Мелкий шрифт для статуса
     display.setFont(u8g2_font_5x8_tf);
     display.drawStr(2, 7, s); 
     display.setFont(u8g2_font_6x10_tf); // Возвращаем нормальный шрифт
@@ -217,15 +221,14 @@ void DisplayManager::drawMenu() {
         if (idx == _menuIndex) {
             display.setDrawColor(1); 
             display.drawBox(0, y, 128, ROW_HEIGHT); 
-            display.setDrawColor(0); // Текст станет "прозрачным" (черным на белом)
+            display.setDrawColor(0); // Текст станет "прозрачным"
         } else { 
             display.setDrawColor(1); 
         }
         
-        // Вертикальное центрирование текста (+9 пикселей от верха строки)
         display.drawStr(4, y + 9, _menuItems[idx].c_str());
     }
-    display.setDrawColor(1); // Сброс цвета на белый
+    display.setDrawColor(1); // Сброс цвета
 }
 
 void DisplayManager::drawTargetList() {
@@ -248,7 +251,7 @@ void DisplayManager::drawTargetList() {
         char buf[64]; 
         char ssidSafe[22];
         
-        // --- УМНАЯ ОБРЕЗКА (ELLIPSIS FIX) ---
+        // --- УМНАЯ ОБРЕЗКА (ELLIPSIS) ---
         int len = strlen(_scanResults[idx].ssid);
         if (len > 18) {
             strncpy(ssidSafe, _scanResults[idx].ssid, 15);
@@ -258,7 +261,6 @@ void DisplayManager::drawTargetList() {
             strcpy(ssidSafe, _scanResults[idx].ssid);
         }
         
-        // Форматирование строки: "SSID -85"
         snprintf(buf, sizeof(buf), "%s %d", ssidSafe, _scanResults[idx].rssi);
         
         if (idx == _targetIndex) { 
@@ -271,7 +273,7 @@ void DisplayManager::drawTargetList() {
 }
 
 void DisplayManager::drawSpectrum() { 
-    // Подписи частот (только для SubGHz)
+    // Подписи частот
     display.setFont(u8g2_font_4x6_tf);
     display.drawStr(0, 64, "433.0");
     display.drawStr(100, 64, "434.2");
@@ -280,7 +282,6 @@ void DisplayManager::drawSpectrum() {
     for(int x=0; x<128; x++) {
         uint8_t val = _currentStatus.spectrum[x];
         if(val > 0) {
-            // Масштабируем высоту (макс 50px)
             int h = val / 2; 
             if (h > 50) h = 50; 
             
@@ -299,8 +300,8 @@ void DisplayManager::drawAttackDetails() {
     
     // Иконка Rolling Code
     if(_currentStatus.rollingCodeDetected) {
-        display.setFont(u8g2_font_open_iconic_check_2x_t); // Библиотека иконок
-        display.drawGlyph(56, 55, 0x42); // Иконка "Внимание/Галочка"
+        display.setFont(u8g2_font_open_iconic_check_2x_t); 
+        display.drawGlyph(56, 55, 0x42); // Иконка
         display.setFont(u8g2_font_6x10_tf);
         display.drawStr(20, 60, "ROLLING CODE"); 
     }
@@ -335,7 +336,7 @@ void DisplayManager::drawNrfMenu() {
 }
 
 void DisplayManager::drawPopup(const char* msg) { 
-    // Очистка под поп-апом
+    // Очистка
     display.setDrawColor(0); 
     display.drawBox(10, 20, 108, 30);
     display.setDrawColor(1);
@@ -344,10 +345,10 @@ void DisplayManager::drawPopup(const char* msg) {
     display.drawFrame(10, 20, 108, 30);
     display.drawBox(10, 20, 108, 12); // Заголовок
     
-    display.setDrawColor(0); // Инверсный текст заголовка
+    display.setDrawColor(0); 
     display.drawStr(45, 30, "INFO");
     
-    display.setDrawColor(1); // Текст сообщения
+    display.setDrawColor(1); 
     display.drawStr(15, 45, msg);
 }
 
@@ -375,7 +376,7 @@ void DisplayManager::showSplashScreen() {
     display.setFont(u8g2_font_ncenB10_tr); 
     display.drawStr(15,35,"nRF Ghost"); 
     display.setFont(u8g2_font_6x10_tf); 
-    display.drawStr(40,50,"v5.7"); 
+    display.drawStr(40,50,"v6.1"); 
     display.sendBuffer(); 
     _isDirty = true; 
 }

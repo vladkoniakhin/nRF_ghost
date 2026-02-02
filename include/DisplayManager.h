@@ -33,15 +33,27 @@ private:
     StatusMessage _currentStatus;
     std::vector<TargetAP> _scanResults;
 
-    // Переменная для сглаживания показаний батареи
     long _batteryFilterAccum = 0;
     bool _batteryInit = false;
     
+    // FIX v6.2: Added "Last Scan" at index 1
     const std::vector<std::string> _menuItems = {
-        "WiFi Scan", "WiFi Deauth", "Beacon Spam", "Evil Twin",
-        "BLE Spoofer", "NRF Jammer", "NRF Analyzer", "NRF Sniffer", "MouseJack",
-        "SubGhz Scan", "SubGhz Jam", "SubGhz RX", "SubGhz TX",
-        "Admin Panel", "Stop All"
+        "WiFi Scan", 
+        "Last Scan", // New Item
+        "WiFi Deauth", 
+        "Beacon Spam", 
+        "Evil Twin",
+        "BLE Spoofer", 
+        "NRF Jammer", 
+        "NRF Analyzer", 
+        "NRF Sniffer", 
+        "MouseJack",
+        "SubGhz Scan", 
+        "SubGhz Jam", 
+        "SubGhz RX", 
+        "SubGhz TX",
+        "Admin Panel", 
+        "Stop All"
     };
     
     void drawStatusBar();

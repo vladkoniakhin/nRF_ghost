@@ -9,8 +9,10 @@
 #include "WebPortalManager.h"
 #include "ConfigManager.h" 
 #include "ScriptManager.h"
+#include "SettingsManager.h"
 #include <esp_task_wdt.h>
 #include <ArduinoJson.h>
+#include <SD.h> 
 
 SemaphoreHandle_t g_spiMutex = nullptr;
 static char g_serialBuffer[256]; 
@@ -45,10 +47,10 @@ SystemController::SystemController() : _currentState(SystemState::IDLE), _active
 
 void SystemController::init() {
     g_spiMutex = xSemaphoreCreateMutex();
-    
     esp_task_wdt_init(5, true);
     esp_task_wdt_add(NULL);
     
+    SettingsManager::getInstance().init();
     LedManager::getInstance().init();
 
     {
@@ -56,7 +58,6 @@ void SystemController::init() {
         if (lock.locked()) {
             SdManager::getInstance().init();
             if (!SdManager::getInstance().isMounted()) {
-                Serial.println("[SYS] CRITICAL: SD Card not found!");
                 StatusMessage err; 
                 err.state = SystemState::SD_ERROR;
                 while(true) {
@@ -66,14 +67,11 @@ void SystemController::init() {
                     delay(10); 
                 }
             }
-        } else {
-            Serial.println("[SYS] Critical: SPI Mutex Deadlock on Boot");
         }
     }
 
     ConfigManager::getInstance().init();
     ScriptManager::getInstance().init();
-    SettingsManager::getInstance().init();
     UpdateManager::performUpdateIfAvailable();
     
     _wifiEngine.setup();
@@ -81,7 +79,7 @@ void SystemController::init() {
     NrfManager::getInstance().setup();
     SubGhzManager::getInstance().setup();
     
-    Serial.println("[SYS] System Ready. v6.0 Final");
+    Serial.println("[SYS] System Ready. v6.2 UX Fixed");
 }
 
 void SystemController::stopCurrentTask() {
@@ -94,7 +92,7 @@ void SystemController::stopCurrentTask() {
         WebPortalManager::getInstance().stop();
     }
     _currentState = SystemState::IDLE;
-    Serial.println("[SYS] Stopped. Idle.");
+    Serial.println("[SYS] Stopped.");
 }
 
 bool SystemController::sendCommand(CommandMessage cmd) { 
@@ -105,13 +103,8 @@ bool SystemController::getStatus(StatusMessage& msg) {
     return xQueueReceive(_statusQueue, &msg, 0) == pdTRUE; 
 }
 
-void SystemController::sendJsonSuccess(const char* msg) {
-    Serial.printf("{\"status\":\"ok\",\"msg\":\"%s\"}\n", msg);
-}
-
-void SystemController::sendJsonError(const char* err) {
-    Serial.printf("{\"status\":\"error\",\"msg\":\"%s\"}\n", err);
-}
+void SystemController::sendJsonSuccess(const char* msg) { Serial.printf("{\"status\":\"ok\",\"msg\":\"%s\"}\n", msg); }
+void SystemController::sendJsonError(const char* err) { Serial.printf("{\"status\":\"error\",\"msg\":\"%s\"}\n", err); }
 
 void SystemController::sendJsonFileList(const char* path) {
     SpiLock lock(1000);
@@ -143,40 +136,21 @@ void SystemController::sendJsonFileList(const char* path) {
 void SystemController::parseSerialJson(char* input) {
     StaticJsonDocument<256> doc;
     DeserializationError error = deserializeJson(doc, input);
-
-    if (error) {
-        sendJsonError("Invalid JSON");
-        return;
-    }
-
+    if (error) { sendJsonError("Invalid JSON"); return; }
     const char* cmdStr = doc["CMD"];
     if (!cmdStr) return;
 
-    if (strcmp(cmdStr, "SCAN") == 0) {
-        processCommand({SystemCommand::CMD_START_SCAN_WIFI, 0});
-        sendJsonSuccess("Scan started");
-    }
-    else if (strcmp(cmdStr, "STOP") == 0) {
-        processCommand({SystemCommand::CMD_STOP_ATTACK, 0});
-        sendJsonSuccess("Stopped");
-    }
-    else if (strcmp(cmdStr, "LIST") == 0) {
-        sendJsonFileList("/");
-    }
-    else if (strcmp(cmdStr, "JAM") == 0) {
-        processCommand({SystemCommand::CMD_START_NRF_JAM, 40});
-        sendJsonSuccess("Jamming started");
-    }
-    else {
-        sendJsonError("Unknown command");
-    }
+    if (strcmp(cmdStr, "SCAN") == 0) processCommand({SystemCommand::CMD_START_SCAN_WIFI, 0});
+    else if (strcmp(cmdStr, "STOP") == 0) processCommand({SystemCommand::CMD_STOP_ATTACK, 0});
+    else if (strcmp(cmdStr, "LIST") == 0) sendJsonFileList("/");
+    else if (strcmp(cmdStr, "JAM") == 0) processCommand({SystemCommand::CMD_START_NRF_JAM, 40});
+    else sendJsonError("Unknown command");
 }
 
 void SystemController::runWorkerLoop() {
     CommandMessage cmd; 
     StatusMessage statusOut; 
     memset(&statusOut, 0, sizeof(StatusMessage));
-    
     uint32_t lastWsPush = 0;
 
     for (;;) {
@@ -198,22 +172,15 @@ void SystemController::runWorkerLoop() {
             char c = Serial.read();
             if (c == '\n') {
                 g_serialBuffer[g_serialIndex] = '\0'; 
-                if (g_serialBuffer[0] == '{') {
-                    parseSerialJson(g_serialBuffer);
-                } else {
+                if (g_serialBuffer[0] == '{') parseSerialJson(g_serialBuffer);
+                else {
                     if (strncmp(g_serialBuffer, "SCAN", 4) == 0) processCommand({SystemCommand::CMD_START_SCAN_WIFI, 0});
                     else if (strncmp(g_serialBuffer, "STOP", 4) == 0) processCommand({SystemCommand::CMD_STOP_ATTACK, 0});
-                    else if (strncmp(g_serialBuffer, "STATUS", 6) == 0) Serial.println("OK");
                 }
                 g_serialIndex = 0;
-            } 
-            else {
-                if (g_serialIndex < sizeof(g_serialBuffer) - 1) {
-                    g_serialBuffer[g_serialIndex++] = c;
-                } else {
-                    g_serialIndex = 0; 
-                    sendJsonError("Buffer Overflow");
-                }
+            } else {
+                if (g_serialIndex < sizeof(g_serialBuffer) - 1) g_serialBuffer[g_serialIndex++] = c;
+                else g_serialIndex = 0; 
             }
         }
 
@@ -228,10 +195,20 @@ void SystemController::runWorkerLoop() {
             running = _activeEngine->loop(statusOut);
             
             if (!running) {
+                // WiFi Scan Complete handling
                 if (_activeEngine == &_wifiEngine && statusOut.state == SystemState::SCAN_COMPLETE) {
                        statusOut.state = SystemState::SCAN_COMPLETE; 
                        _currentState = SystemState::SCAN_COMPLETE;
-                } else {
+                } 
+                // FIX #3: SubGhz Capture Complete (Quick Replay Logic)
+                // Если захват завершен, мы не сбрасываем в IDLE, а даем пользователю возможность повторить
+                else if (_activeEngine == &SubGhzManager::getInstance() && statusOut.state == SystemState::ANALYZING_SUBGHZ_RX) {
+                    stopCurrentTask(); 
+                    statusOut.state = SystemState::SCAN_COMPLETE; // Reusing state for "Waiting User"
+                    _currentState = SystemState::SCAN_COMPLETE;
+                    snprintf(statusOut.logMsg, MAX_LOG_MSG, "Code Captured!");
+                }
+                else {
                     stopCurrentTask(); 
                     statusOut.state = SystemState::IDLE; 
                     snprintf(statusOut.logMsg, MAX_LOG_MSG, "Finished");
@@ -257,26 +234,39 @@ void SystemController::processCommand(CommandMessage cmd) {
         stopCurrentTask();
         return;
     }
+    
+    if (cmd.cmd == SystemCommand::CMD_SAVE_SETTINGS) {
+        bool current = SettingsManager::getInstance().getLedEnabled();
+        SettingsManager::getInstance().setLedEnabled(!current); 
+        return;
+    }
 
     if (cmd.cmd == SystemCommand::CMD_START_ADMIN_MODE) {
-        if (_activeEngine != nullptr) {
-            Serial.println("[Err] Stop current task first!");
-            return; 
-        }
+        if (_activeEngine != nullptr) return; 
         _currentState = SystemState::ADMIN_MODE;
         WebPortalManager::getInstance().start(""); 
         return;
     }
 
     if (_activeEngine != nullptr) {
-        Serial.println("[Err] System BUSY.");
+        DisplayManager::getInstance().drawPopup("Busy!"); // Instant feedback
         return; 
     }
 
     switch (cmd.cmd) {
         case SystemCommand::CMD_START_SCAN_WIFI: _activeEngine = &_wifiEngine; _wifiEngine.startScan(); break;
-        case SystemCommand::CMD_START_DEAUTH: if (_selectedTarget.bssid[0] != 0) { _activeEngine = &_wifiEngine; _wifiEngine.startDeauth(_selectedTarget); } break;
-        case SystemCommand::CMD_START_EVIL_TWIN: if (_selectedTarget.bssid[0] != 0) { _activeEngine = &_wifiEngine; _wifiEngine.startEvilTwin(_selectedTarget); } break;
+        
+        // FIX #2: Dead Clicks Protection
+        case SystemCommand::CMD_START_DEAUTH: 
+            if (_selectedTarget.bssid[0] != 0) { _activeEngine = &_wifiEngine; _wifiEngine.startDeauth(_selectedTarget); } 
+            else { DisplayManager::getInstance().drawPopup("No Target Selected!"); }
+            break;
+            
+        case SystemCommand::CMD_START_EVIL_TWIN: 
+            if (_selectedTarget.bssid[0] != 0) { _activeEngine = &_wifiEngine; _wifiEngine.startEvilTwin(_selectedTarget); } 
+            else { DisplayManager::getInstance().drawPopup("No Target Selected!"); }
+            break;
+            
         case SystemCommand::CMD_START_BEACON_SPAM: _activeEngine = &_wifiEngine; _wifiEngine.startBeaconSpam(); break;
         case SystemCommand::CMD_START_BLE_SPOOF: _activeEngine = &BleManager::getInstance(); BleManager::getInstance().startSpoof((BleSpoofType)cmd.param1); break;
         case SystemCommand::CMD_START_NRF_JAM: _activeEngine = &NrfManager::getInstance(); NrfManager::getInstance().startJamming((uint8_t)cmd.param1); break;
@@ -288,24 +278,24 @@ void SystemController::processCommand(CommandMessage cmd) {
         case SystemCommand::CMD_START_SUBGHZ_RX: _activeEngine = &SubGhzManager::getInstance(); SubGhzManager::getInstance().startCapture(); break;
         case SystemCommand::CMD_START_SUBGHZ_TX: 
             _activeEngine = &SubGhzManager::getInstance(); 
-            if (cmd.param1 == 1) SubGhzManager::getInstance().startBruteForce();
-            else SubGhzManager::getInstance().playFlipperFile("/test.sub"); 
+            if (cmd.param1 == 1) { SubGhzManager::getInstance().startBruteForce(); } 
+            else {
+                SpiLock lock(500); 
+                if (lock.locked() && SD.exists("/last_capture.sub")) SubGhzManager::getInstance().playFlipperFile("/last_capture.sub"); 
+                else SubGhzManager::getInstance().playFlipperFile("/test.sub"); 
+            }
             break;
         default: break;
     }
 }
 
-// FIX v6.0: PURE 4-BUTTON LOGIC (CLEANED)
 void TaskUI(void* pvParameters) {
     auto& input = InputManager::getInstance();
     auto& display = DisplayManager::getInstance();
     auto& sys = SystemController::getInstance();
     auto& leds = LedManager::getInstance();
 
-    input.init(); 
-    display.init(); 
-    leds.init();
-    
+    input.init(); display.init(); leds.init();
     display.showSplashScreen(); 
     vTaskDelay(pdMS_TO_TICKS(1500));
 
@@ -313,45 +303,65 @@ void TaskUI(void* pvParameters) {
     statusMsg.state = SystemState::IDLE;
     CommandMessage cmdOut;
     TickType_t xLastWakeTime = xTaskGetTickCount();
+    
+    uint32_t selectPressTime = 0;
+    bool selectHeld = false;
 
     for (;;) {
         InputEvent evt = input.poll();
-        
         if (evt != InputEvent::NONE) {
             display.handleInput(evt);
             
-            // CLEAN: Только SELECT (без BTN_RIGHT)
-            if (evt == InputEvent::BTN_SELECT) {
+            if (evt == InputEvent::BTN_SELECT) { if (selectPressTime == 0) selectPressTime = millis(); } 
+            else if (evt == InputEvent::BTN_BACK) { cmdOut.cmd = SystemCommand::CMD_STOP_ATTACK; sys.sendCommand(cmdOut); }
+        }
+        
+        if (digitalRead(Config::PIN_BTN_SELECT) == LOW) { 
+             if (selectPressTime > 0 && (millis() - selectPressTime > 1500) && !selectHeld) {
+                 if (statusMsg.state == SystemState::IDLE) {
+                     cmdOut.cmd = SystemCommand::CMD_SAVE_SETTINGS; sys.sendCommand(cmdOut);
+                     display.drawPopup("Stealth Mode Toggle"); display.render(); vTaskDelay(500);
+                 }
+                 selectHeld = true;
+             }
+        } else {
+            if (selectPressTime > 0 && !selectHeld) {
                 if (statusMsg.state == SystemState::IDLE) {
-                    int idx = display.getMenuIndex(); 
-                    cmdOut.param1 = 0;
+                    int idx = display.getMenuIndex(); cmdOut.param1 = 0;
                     
                     if (idx == 0) cmdOut.cmd = SystemCommand::CMD_START_SCAN_WIFI;
-                    else if (idx == 1) cmdOut.cmd = SystemCommand::CMD_START_DEAUTH;
-                    else if (idx == 2) cmdOut.cmd = SystemCommand::CMD_START_BEACON_SPAM;
-                    else if (idx == 3) cmdOut.cmd = SystemCommand::CMD_START_EVIL_TWIN;
-                    else if (idx == 4) { statusMsg.state = SystemState::MENU_SELECT_BLE; display.resetSubmenuIndex(); display.updateStatus(statusMsg); }
-                    else if (idx == 5) { statusMsg.state = SystemState::MENU_SELECT_NRF; display.resetSubmenuIndex(); display.updateStatus(statusMsg); }
-                    else if (idx == 6) cmdOut.cmd = SystemCommand::CMD_START_NRF_JAM;
-                    else if (idx == 7) cmdOut.cmd = SystemCommand::CMD_START_NRF_ANALYZER;
-                    else if (idx == 8) cmdOut.cmd = SystemCommand::CMD_START_NRF_SNIFF;
-                    else if (idx == 9) cmdOut.cmd = SystemCommand::CMD_START_MOUSEJACK;
-                    else if (idx == 10) cmdOut.cmd = SystemCommand::CMD_START_SUBGHZ_SCAN;
-                    else if (idx == 11) cmdOut.cmd = SystemCommand::CMD_START_SUBGHZ_JAM;
-                    else if (idx == 12) cmdOut.cmd = SystemCommand::CMD_START_SUBGHZ_RX; 
-                    else if (idx == 13) cmdOut.cmd = SystemCommand::CMD_START_SUBGHZ_TX; 
-                    else if (idx == 14) cmdOut.cmd = SystemCommand::CMD_START_ADMIN_MODE;
-                    else if (idx == 15) cmdOut.cmd = SystemCommand::CMD_STOP_ATTACK;
+                    else if (idx == 1) { statusMsg.state = SystemState::SCAN_COMPLETE; display.updateStatus(statusMsg); display.setTargetList(sys.getScanResults()); } // FIX #2: Last Scan
+                    else if (idx == 2) cmdOut.cmd = SystemCommand::CMD_START_DEAUTH;
+                    else if (idx == 3) cmdOut.cmd = SystemCommand::CMD_START_BEACON_SPAM;
+                    else if (idx == 4) cmdOut.cmd = SystemCommand::CMD_START_EVIL_TWIN;
+                    else if (idx == 5) { statusMsg.state = SystemState::MENU_SELECT_BLE; display.resetSubmenuIndex(); display.updateStatus(statusMsg); }
+                    else if (idx == 6) { statusMsg.state = SystemState::MENU_SELECT_NRF; display.resetSubmenuIndex(); display.updateStatus(statusMsg); }
+                    else if (idx == 7) cmdOut.cmd = SystemCommand::CMD_START_NRF_JAM;
+                    else if (idx == 8) cmdOut.cmd = SystemCommand::CMD_START_NRF_ANALYZER;
+                    else if (idx == 9) cmdOut.cmd = SystemCommand::CMD_START_NRF_SNIFF;
+                    else if (idx == 10) cmdOut.cmd = SystemCommand::CMD_START_MOUSEJACK;
+                    else if (idx == 11) cmdOut.cmd = SystemCommand::CMD_START_SUBGHZ_SCAN;
+                    else if (idx == 12) cmdOut.cmd = SystemCommand::CMD_START_SUBGHZ_JAM;
+                    else if (idx == 13) cmdOut.cmd = SystemCommand::CMD_START_SUBGHZ_RX; 
+                    else if (idx == 14) cmdOut.cmd = SystemCommand::CMD_START_SUBGHZ_TX; 
+                    else if (idx == 15) cmdOut.cmd = SystemCommand::CMD_START_ADMIN_MODE;
+                    else if (idx == 16) cmdOut.cmd = SystemCommand::CMD_STOP_ATTACK;
                     
                     if (statusMsg.state == SystemState::IDLE) sys.sendCommand(cmdOut);
                 } 
                 else if (statusMsg.state == SystemState::SCAN_COMPLETE) {
-                    cmdOut.cmd = SystemCommand::CMD_SELECT_TARGET; cmdOut.param1 = display.getTargetIndex(); sys.sendCommand(cmdOut);
-                    cmdOut.cmd = SystemCommand::CMD_START_DEAUTH; cmdOut.param1 = 0; sys.sendCommand(cmdOut);
+                    // FIX #3: Context Aware Select
+                    // Если мы видим "Code Captured" -> значит это SubGhz Replay
+                    if (strstr(statusMsg.logMsg, "Code Captured") != NULL) {
+                        cmdOut.cmd = SystemCommand::CMD_START_SUBGHZ_TX; cmdOut.param1 = 0; sys.sendCommand(cmdOut);
+                    } else {
+                        // Иначе это WiFi Target
+                        cmdOut.cmd = SystemCommand::CMD_SELECT_TARGET; cmdOut.param1 = display.getTargetIndex(); sys.sendCommand(cmdOut);
+                        cmdOut.cmd = SystemCommand::CMD_START_DEAUTH; cmdOut.param1 = 0; sys.sendCommand(cmdOut);
+                    }
                 }
-            } else if (evt == InputEvent::BTN_BACK) {
-                cmdOut.cmd = SystemCommand::CMD_STOP_ATTACK; sys.sendCommand(cmdOut);
             }
+            selectPressTime = 0; selectHeld = false;
         }
         
         StatusMessage newMsg;
@@ -364,7 +374,6 @@ void TaskUI(void* pvParameters) {
         
         leds.update(); 
         display.render();
-        
         vTaskDelayUntil(&xLastWakeTime, pdMS_TO_TICKS(33));
     }
 }
