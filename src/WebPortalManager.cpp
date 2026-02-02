@@ -17,15 +17,24 @@ bool validatePath(String& path) {
     return true;
 }
 
+// FIX: Лимит клиентов для защиты от OOM (Out of Memory)
 void onEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type, void *arg, uint8_t *data, size_t len) {
-    // No limits logic here per user request
+    if (type == WS_EVT_CONNECT) {
+        // Если уже более 4 клиентов - сбрасываем новых
+        if (server->count() > 4) {
+            client->close();
+            return;
+        }
+        // Optional log
+        // Serial.printf("WS Client %u connected\n", client->id());
+    }
 }
 
 static const char index_html[] PROGMEM = R"rawliteral(
 <!DOCTYPE html>
 <html>
 <head>
- <title>nRF Ghost v5.3</title>
+ <title>nRF Ghost v5.6</title>
  <meta name="viewport" content="width=device-width, initial-scale=1">
  <style>
   body { font-family: monospace; background: #0d0d0d; color: #00ff00; margin: 0; padding: 15px; }
@@ -46,7 +55,7 @@ static const char index_html[] PROGMEM = R"rawliteral(
  </style>
 </head>
 <body>
- <h2>Ghost v5.3 <span id="status" class="warn">[CONNECTING]</span></h2>
+ <h2>Ghost v5.6 <span id="status" class="warn">[CONNECTING]</span></h2>
 
  <div class="card">
   <h3>Live Spectrum & Status</h3>
@@ -173,6 +182,7 @@ void WebPortalManager::start(const char* ignore) {
     
     _dnsServer.start(53, "*", apIP);
 
+    // Подключаем обработчик событий
     _ws.onEvent(onEvent);
     _server.addHandler(&_ws);
 

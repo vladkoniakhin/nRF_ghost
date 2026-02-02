@@ -4,7 +4,10 @@
 #include "ScriptManager.h"
 #include <esp_task_wdt.h>
 
-volatile uint16_t g_subGhzBuffer[Config::RAW_BUFFER_SIZE];
+// FIX: Переменные в IRAM (DRAM) для быстрого доступа из ISR
+// __attribute__((section(".noinit"))) или просто volatile
+// Главное - они не должны быть в PSRAM (если она есть)
+volatile uint16_t g_subGhzBuffer[Config::RAW_BUFFER_SIZE]; 
 volatile size_t g_subGhzIndex = 0;
 volatile uint32_t g_subGhzLastTime = 0;
 volatile bool g_subGhzCaptureDone = false;
@@ -21,12 +24,19 @@ struct SubGhzLock {
     bool _ok;
 };
 
+// FIX: IRAM_ATTR для обработчика прерываний
 void IRAM_ATTR SubGhzManager::isrHandler() {
     if (g_subGhzCaptureDone || g_subGhzIndex >= Config::RAW_BUFFER_SIZE) return;
+    
     uint32_t now = micros(); 
     uint32_t d = now - g_subGhzLastTime; 
     g_subGhzLastTime = now;
-    if (d > 50 && d < 100000) g_subGhzBuffer[g_subGhzIndex++] = (uint16_t)d;
+    
+    // FIX: Безопасное приведение типов (не кастить > 65535)
+    if (d > 50) {
+        if (d > 65535) d = 65535; // Clamp value
+        g_subGhzBuffer[g_subGhzIndex++] = (uint16_t)d;
+    }
 }
 
 SubGhzManager& SubGhzManager::getInstance() { static SubGhzManager i; return i; }
@@ -36,7 +46,8 @@ SubGhzManager::SubGhzManager() :
     _isAnalyzing(false), _isJamming(false), _isCapturing(false), 
     _isReplaying(false), _isBruteForcing(false), 
     _isRollingCode(false), _currentFreq(433.92), _currentModulation(Modulation::OOK),
-    _producerTaskHandle(nullptr), _shouldStop(false)
+    _shouldStop(false),
+    _producerTaskHandle(nullptr)
 {
     _rmtQueue = xQueueCreate(10, sizeof(RmtBlock));
 }
@@ -68,13 +79,14 @@ void SubGhzManager::stop() {
     
     detachInterrupt(digitalPinToInterrupt(Config::PIN_CC_GDO0));
     
-    // Soft Stop Logic (Vital for stability)
     if (_producerTaskHandle != nullptr) {
         _shouldStop = true;
         uint32_t start = millis();
+        // Ждем пока задача сама выйдет
         while (_producerTaskHandle != nullptr && millis() - start < 1000) {
             vTaskDelay(10);
         }
+        // Если зависла - убиваем
         if (_producerTaskHandle != nullptr) {
             vTaskDelete(_producerTaskHandle);
             _producerTaskHandle = nullptr;
@@ -122,14 +134,12 @@ void SubGhzManager::bruteForceTask(void* param) {
             if (bit == 0) block.items[block.itemCount++] = {{{ (uint16_t)Te, 1, (uint16_t)(2*Te), 0 }}};
             else block.items[block.itemCount++] = {{{ (uint16_t)(2*Te), 1, (uint16_t)Te, 0 }}};
         }
-        
         block.items[block.itemCount++] = {{{ 0, 0, (uint16_t)(36*Te), 0 }}};
         
-        // FIX: Use timeout instead of portMAX_DELAY to allow stop
+        // Timeout вместо бесконечного ожидания
         if (xQueueSend(mgr->_rmtQueue, &block, pdMS_TO_TICKS(100)) != pdTRUE) {
             if (mgr->_shouldStop) break;
         }
-        // Repeat
         xQueueSend(mgr->_rmtQueue, &block, pdMS_TO_TICKS(10)); 
         xQueueSend(mgr->_rmtQueue, &block, pdMS_TO_TICKS(10)); 
         
@@ -216,7 +226,6 @@ void SubGhzManager::producerTask(void* param) {
                         duration -= 65534;
                         if (duration > 65534) duration = 0;
                         if(block.itemCount >= 64) { 
-                            // FIX: Timeout check
                             if (xQueueSend(mgr->_rmtQueue, &block, pdMS_TO_TICKS(50)) != pdTRUE) {
                                 if (mgr->_shouldStop) break;
                             }

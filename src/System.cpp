@@ -10,6 +10,7 @@
 #include "ConfigManager.h" 
 #include "ScriptManager.h"
 #include <esp_task_wdt.h>
+#include <ArduinoJson.h>
 
 SemaphoreHandle_t g_spiMutex = nullptr;
 static char g_serialBuffer[256]; 
@@ -45,7 +46,7 @@ SystemController::SystemController() : _currentState(SystemState::IDLE), _active
 void SystemController::init() {
     g_spiMutex = xSemaphoreCreateMutex();
     
-    // WDT Init (Moved here to run once)
+    // WDT Init (5 seconds)
     esp_task_wdt_init(5, true);
     esp_task_wdt_add(NULL);
     
@@ -60,7 +61,9 @@ void SystemController::init() {
                 Serial.println("[SYS] CRITICAL: SD Card not found!");
                 StatusMessage err; 
                 err.state = SystemState::SD_ERROR;
+                // Infinite loop with WDT reset to show error
                 while(true) {
+                    esp_task_wdt_reset();
                     LedManager::getInstance().setStatus(err);
                     LedManager::getInstance().update();
                     delay(10); 
@@ -85,7 +88,7 @@ void SystemController::init() {
     NrfManager::getInstance().setup();
     SubGhzManager::getInstance().setup();
     
-    Serial.println("[SYS] System Ready. v5.3 Chaos");
+    Serial.println("[SYS] System Ready. v5.6 Patched");
 }
 
 void SystemController::stopCurrentTask() {
@@ -112,7 +115,7 @@ bool SystemController::getStatus(StatusMessage& msg) {
     return xQueueReceive(_statusQueue, &msg, 0) == pdTRUE; 
 }
 
-// --- JSON SERIAL HELPERS ---
+// --- JSON SERIAL HELPERS (NO HEAP ALLOC) ---
 
 void SystemController::sendJsonSuccess(const char* msg) {
     Serial.printf("{\"status\":\"ok\",\"msg\":\"%s\"}\n", msg);
@@ -149,46 +152,31 @@ void SystemController::sendJsonFileList(const char* path) {
     }
 }
 
-void SystemController::parseSerialJson(String& input) {
-    // Buffer overflow protection
-    if (input.length() >= 128) {
-        sendJsonError("Cmd too long");
+void SystemController::parseSerialJson(char* input) {
+    // Используем StaticJsonDocument, чтобы не фрагментировать кучу
+    StaticJsonDocument<256> doc;
+    DeserializationError error = deserializeJson(doc, input);
+
+    if (error) {
+        sendJsonError("Invalid JSON");
         return;
     }
 
-    input.trim();
-    if (input.length() < 5 || input.charAt(0) != '{') return;
+    const char* cmdStr = doc["CMD"];
+    if (!cmdStr) return;
 
-    char buffer[128];
-    strncpy(buffer, input.c_str(), sizeof(buffer) - 1);
-    buffer[sizeof(buffer) - 1] = '\0'; 
-
-    for(int i=0; buffer[i]; i++) buffer[i] = toupper((unsigned char)buffer[i]);
-
-    char* cmdPtr = strstr(buffer, "\"CMD\"");
-    if (!cmdPtr) return;
-
-    cmdPtr = strchr(cmdPtr, ':');
-    if (!cmdPtr) return;
-    cmdPtr++; 
-    
-    while(*cmdPtr == ' ' || *cmdPtr == '"') cmdPtr++;
-    
-    char* endPtr = strpbrk(cmdPtr, "\",}");
-    if (endPtr) *endPtr = '\0';
-
-    if (strcmp(cmdPtr, "SCAN") == 0) {
+    if (strcmp(cmdStr, "SCAN") == 0) {
         processCommand({SystemCommand::CMD_START_SCAN_WIFI, 0});
         sendJsonSuccess("Scan started");
     }
-    else if (strcmp(cmdPtr, "STOP") == 0) {
+    else if (strcmp(cmdStr, "STOP") == 0) {
         processCommand({SystemCommand::CMD_STOP_ATTACK, 0});
         sendJsonSuccess("Stopped");
     }
-    else if (strcmp(cmdPtr, "LIST") == 0) {
+    else if (strcmp(cmdStr, "LIST") == 0) {
         sendJsonFileList("/");
     }
-    else if (strcmp(cmdPtr, "JAM") == 0) {
+    else if (strcmp(cmdStr, "JAM") == 0) {
         processCommand({SystemCommand::CMD_START_NRF_JAM, 40});
         sendJsonSuccess("Jamming started");
     }
@@ -223,18 +211,17 @@ void SystemController::runWorkerLoop() {
             processCommand(cmd);
         }
 
-        // 3. Serial Handling (Optimized)
+        // 3. Serial Handling (Heap Safe)
         while (Serial.available()) {
             char c = Serial.read();
             if (c == '\n') {
                 g_serialBuffer[g_serialIndex] = '\0'; 
                 
-                // Avoid Creating String if not JSON
+                // Обработка JSON без создания String
                 if (g_serialBuffer[0] == '{') {
-                    String line = String(g_serialBuffer);
-                    parseSerialJson(line);
+                    parseSerialJson(g_serialBuffer);
                 } else {
-                    // Simple text check
+                    // Simple text check via C-string functions
                     if (strncmp(g_serialBuffer, "SCAN", 4) == 0) processCommand({SystemCommand::CMD_START_SCAN_WIFI, 0});
                     else if (strncmp(g_serialBuffer, "STOP", 4) == 0) processCommand({SystemCommand::CMD_STOP_ATTACK, 0});
                     else if (strncmp(g_serialBuffer, "STATUS", 6) == 0) Serial.println("OK");
@@ -245,6 +232,7 @@ void SystemController::runWorkerLoop() {
                 if (g_serialIndex < sizeof(g_serialBuffer) - 1) {
                     g_serialBuffer[g_serialIndex++] = c;
                 } else {
+                    // Buffer overflow protection
                     g_serialIndex = 0; 
                     sendJsonError("Buffer Overflow");
                 }

