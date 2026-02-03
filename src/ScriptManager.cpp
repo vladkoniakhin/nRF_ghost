@@ -14,8 +14,6 @@ void ScriptManager::init() {}
 void ScriptManager::stop() {
     _running = false;
     if (_taskHandle) {
-        // Allow some time for graceful exit if needed, but since this task
-        // is reading line by line, _running=false breaks the loop instantly.
         _taskHandle = nullptr; 
     }
 }
@@ -35,6 +33,18 @@ void ScriptManager::runScript(const char* path) {
     xTaskCreatePinnedToCore(scriptTask, "ScriptEng", 4096, this, 1, &_taskHandle, 1);
 }
 
+// Helper: Безопасное чтение строки в буфер
+size_t readLine(File& f, char* buf, size_t maxLen) {
+    size_t count = 0;
+    while (f.available() && count < maxLen - 1) {
+        char c = f.read();
+        if (c == '\n') break;
+        if (c != '\r') buf[count++] = c; // Игнорируем CR
+    }
+    buf[count] = 0;
+    return count;
+}
+
 void ScriptManager::scriptTask(void* param) {
     ScriptManager* mgr = (ScriptManager*)param;
     File file = SD.open(mgr->_currentScriptPath);
@@ -46,26 +56,25 @@ void ScriptManager::scriptTask(void* param) {
     vTaskDelete(NULL);
 }
 
-ScriptLine ScriptManager::parseLine(String line) {
+// Реализация соответствует хедеру (принимает char*)
+ScriptLine ScriptManager::parseLine(char* line) {
     ScriptLine sl;
     sl.cmd = ScriptCmd::NONE;
-    line.trim();
-    if (line.length() == 0 || line.startsWith("//")) return sl;
-
-    int spaceIdx = line.indexOf(' ');
-    String cmdStr = (spaceIdx == -1) ? line : line.substring(0, spaceIdx);
     
-    if (spaceIdx != -1) {
-        sl.arg = line.substring(spaceIdx + 1);
-        sl.arg.trim();
-        // Remove quotes if present
-        if (sl.arg.startsWith("\"") && sl.arg.endsWith("\"")) {
-            sl.arg = sl.arg.substring(1, sl.arg.length() - 1);
-        } else if (sl.arg.startsWith("'") && sl.arg.endsWith("'")) {
-            sl.arg = sl.arg.substring(1, sl.arg.length() - 1);
-        }
-    }
+    // Trim leading spaces
+    char* ptr = line;
+    while (*ptr == ' ') ptr++;
+    if (*ptr == 0 || strncmp(ptr, "//", 2) == 0) return sl;
 
+    // Split command and arg
+    char* spacePos = strchr(ptr, ' ');
+    if (spacePos) {
+        *spacePos = 0; // Null terminate command
+        sl.arg = String(spacePos + 1); // Arg can be String for convenience (short lived)
+        sl.arg.trim();
+    }
+    
+    String cmdStr = String(ptr);
     cmdStr.toUpperCase();
 
     if (cmdStr == "WAIT_RX") sl.cmd = ScriptCmd::WAIT_RX;
@@ -78,9 +87,12 @@ ScriptLine ScriptManager::parseLine(String line) {
 }
 
 void ScriptManager::parseAndExecute(File& file) {
+    // FIX v6.3: Статический буфер вместо String для защиты кучи
+    char lineBuf[128]; 
+    
     while (file.available() && _running) {
-        String line = file.readStringUntil('\n');
-        ScriptLine sl = parseLine(line);
+        readLine(file, lineBuf, sizeof(lineBuf));
+        ScriptLine sl = parseLine(lineBuf);
 
         switch (sl.cmd) {
             case ScriptCmd::WAIT_RX:
@@ -90,7 +102,10 @@ void ScriptManager::parseAndExecute(File& file) {
                 break;
             case ScriptCmd::IF_SIGNAL:
                 if (_signalReceived && _lastHash == sl.val) {} 
-                else { if (file.available()) file.readStringUntil('\n'); }
+                else { 
+                    // Пропускаем следующую строку (блок else)
+                    if (file.available()) readLine(file, lineBuf, sizeof(lineBuf)); 
+                }
                 break;
             case ScriptCmd::TX_RAW:
                 SubGhzManager::getInstance().playFlipperFile(sl.arg.c_str());
@@ -104,5 +119,7 @@ void ScriptManager::parseAndExecute(File& file) {
                 break;
             default: break;
         }
+        // Даем время другим задачам
+        vTaskDelay(1);
     }
 }

@@ -30,7 +30,9 @@ private:
     
     static void scriptTask(void* param);
     void parseAndExecute(File& file);
-    ScriptLine parseLine(String line);
+    
+    // FIX v6.3: Изменена сигнатура для работы с char* (Memory Safety)
+    ScriptLine parseLine(char* line); 
     
     TaskHandle_t _taskHandle;
     bool _running;

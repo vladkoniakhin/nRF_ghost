@@ -24,11 +24,14 @@ struct PcapPacketHeader {
 class SdManager {
 public:
     static SdManager& getInstance();
+    
     void init();
     void startCapture();
     void stopCapture();
-    bool enqueuePacket(const uint8_t* buf, uint16_t len);
+    
+    // Метод для добавления пакета из прерывания (ISR Safe)
     bool enqueuePacketFromISR(const uint8_t* buf, uint16_t len);
+    
     bool isMounted() const { return _isMounted; }
     bool isCapturing() const { return _isCapturing; }
 
@@ -36,10 +39,16 @@ private:
     SdManager();
     SdManager(const SdManager&) = delete;
     void operator=(const SdManager&) = delete;
+    
     static void writeTask(void* parameter);
+    
     bool _isMounted;
     bool _isCapturing;
     File _pcapFile;
     QueueHandle_t _packetQueue;
+    
     uint32_t _fileIndex;
+    
+    // FIX v6.3: Переменная добавлена в хедер для решения ошибки компиляции
+    uint32_t _nextFileIndex; 
 };
