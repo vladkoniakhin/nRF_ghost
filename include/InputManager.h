@@ -5,7 +5,9 @@
 class InputManager {
 public:
     static InputManager& getInstance();
+    
     void init();
+    void clear(); // НОВЫЙ МЕТОД v7.0
     InputEvent poll(); 
 
 private:

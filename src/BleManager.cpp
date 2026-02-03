@@ -14,24 +14,29 @@ BleManager::BleManager() :
 {}
 
 void BleManager::setup() { 
-    BLEDevice::init("nRFBox"); 
-    _pAdvertising = BLEDevice::getAdvertising(); 
+    // Пусто, так как BLE init делается по требованию в startSpoof
 }
 
 void BleManager::stop() { 
     if(_isRunning && _pAdvertising) { 
         _pAdvertising->stop(); 
         _isRunning = false; 
+        BLEDevice::deinit(true); // Free memory
     } 
 }
 
 void BleManager::startSpoof(BleSpoofType type) {
     stop(); 
+    
+    // SystemController уже вызвал btStart()
+    BLEDevice::init("nRFBox"); 
+    _pAdvertising = BLEDevice::getAdvertising(); 
+    
     _currentType = type; 
     setPayload(type);
     
-    _pAdvertising->setMinInterval(0x20); // 20ms
-    _pAdvertising->setMaxInterval(0x40); // 40ms
+    _pAdvertising->setMinInterval(0x20); 
+    _pAdvertising->setMaxInterval(0x40); 
     _pAdvertising->start(); 
     _isRunning = true;
 }
@@ -57,7 +62,6 @@ void BleManager::setPayload(BleSpoofType type) {
     _pAdvertising->setAdvertisementData(ad);
 }
 
-// FIX: Non-blocking Loop
 static uint32_t lastBleLog = 0;
 
 bool BleManager::loop(StatusMessage& out) {
@@ -65,18 +69,13 @@ bool BleManager::loop(StatusMessage& out) {
         out.state = SystemState::IDLE; 
         return false; 
     }
-    
     out.state = SystemState::ATTACKING_BLE; 
     
-    // Эмуляция активности (пакеты шлет сам BLE стек в фоне)
     if (millis() - lastBleLog > 100) {
         _packetsSent++; 
         lastBleLog = millis();
     }
-    
     out.packetsSent = _packetsSent;
     snprintf(out.logMsg, MAX_LOG_MSG, "Spoofing...");
-    
-    // vTaskDelay убран, так как эта функция вызывается в общем цикле
     return true;
 }

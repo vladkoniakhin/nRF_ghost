@@ -46,7 +46,8 @@ bool ConfigManager::loadFromFile() {
         return false;
     }
 
-    JsonDocument doc;
+    // FIX v7.0: Bigger buffer for safety
+    StaticJsonDocument<512> doc;
     DeserializationError error = deserializeJson(doc, file);
     file.close();
 
@@ -67,14 +68,12 @@ void ConfigManager::save() {
     CfgSpiLock lock;
     if (!lock.locked()) return;
 
-    JsonDocument doc;
+    StaticJsonDocument<512> doc;
     doc["wifi_ssid"] = _wifiSsid;
     doc["wifi_pass"] = _wifiPass;
     doc["led_brightness"] = _ledBrightness;
     doc["default_attack_mode"] = _defaultAttack;
 
-    // Safe save strategy: write to tmp, then rename could be better, 
-    // but SD library support varies. Using direct overwrite for MVP stability.
     if (SD.exists(_filename)) SD.remove(_filename);
 
     File file = SD.open(_filename, FILE_WRITE);

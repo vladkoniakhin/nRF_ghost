@@ -12,12 +12,13 @@ public:
     void start(const char* ssid);
     void stop();
     void processDns();
+    void broadcastStatus(const char* state, int mem);
     bool isRunning() const;
 
 private:
     WebPortalManager();
     DNSServer _dnsServer;
     AsyncWebServer _server;
+    AsyncWebSocket _ws; // FIX: Added WS member
     bool _isRunning;
-    void saveCreds(const char* ssid, const char* pass);
 };

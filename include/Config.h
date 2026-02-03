@@ -5,21 +5,20 @@
 extern SemaphoreHandle_t g_spiMutex;
 
 namespace Config {
-    // --- PINS (MH-ET LIVE ESP32) ---
+    // --- PINS (MH-ET LIVE ESP32 / Wemos D1 Mini ESP32) ---
+    // Change these if using a different board
     constexpr uint8_t PIN_OLED_SDA = 21;
     constexpr uint8_t PIN_OLED_SCL = 22;
     
-    // Кнопки управления (4 Button Layout v6.0)
     constexpr uint8_t PIN_BTN_UP       = 26;
     constexpr uint8_t PIN_BTN_DOWN     = 32;
-    constexpr uint8_t PIN_BTN_SELECT   = 33; // Center / Action
-    constexpr uint8_t PIN_BTN_LEFT     = 25; // Back / Stop
-    // PIN_BTN_RIGHT (GPIO 2) is FREE for IR/Expansion
+    constexpr uint8_t PIN_BTN_SELECT   = 33; 
+    constexpr uint8_t PIN_BTN_LEFT     = 25; 
 
     constexpr uint8_t PIN_NEOPIXEL     = 14;
     constexpr uint8_t NEOPIXEL_COUNT   = 1;
 
-    // SPI Bus
+    // SPI Bus (VSPI default)
     constexpr uint8_t PIN_SPI_SCK  = 18;
     constexpr uint8_t PIN_SPI_MISO = 19;
     constexpr uint8_t PIN_SPI_MOSI = 23;
@@ -29,13 +28,18 @@ namespace Config {
     constexpr uint8_t PIN_NRF_CSN_A = 17;
     constexpr uint8_t PIN_NRF_CE_B  = 16;
     constexpr uint8_t PIN_NRF_CSN_B = 4; 
+    
+    // CC1101
     constexpr uint8_t PIN_CC_CS     = 27;
-    constexpr uint8_t PIN_CC_GDO0   = 15;
+    constexpr uint8_t PIN_CC_GDO0   = 15; // MUST be a pin with RMT support
+    
+    // SD Card
     constexpr uint8_t PIN_SD_CS     = 13;
+    
+    // Battery
     constexpr uint8_t PIN_BAT_ADC   = 34;
 
     // --- SYSTEM CONSTANTS ---
-    // Increased queue size for better packet capture stability
     constexpr size_t PCAP_QUEUE_SIZE = 128; 
     constexpr size_t MAX_PACKET_LEN  = 256;
     constexpr uint32_t SPI_SPEED_MHZ = 10000000;
@@ -49,5 +53,6 @@ namespace Config {
     
     constexpr float FSK_DEVIATION_DEFAULT = 47.6;
     constexpr uint16_t CAME_BIT_PERIOD = 320;
+    
     constexpr uint32_t SUBGHZ_STACK_SIZE = 10240;
 }

