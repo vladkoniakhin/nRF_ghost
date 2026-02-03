@@ -38,6 +38,51 @@
 
 ## 🔌 Схема подключения (Wiring Diagram)
 
+### 🗺️ Графическая схема (Logic)
+
+```mermaid
+graph TD
+    ESP[ESP32 Controller]
+    
+    %% Power
+    BAT[LiPo Battery] -->|Wires| TP4056
+    TP4056 -->|5V| ESP
+    
+    %% SPI Bus
+    ESP ==>|SCK / GPIO 18| BUS_SCK((SCK Line))
+    ESP ==>|MISO / GPIO 19| BUS_MISO((MISO Line))
+    ESP ==>|MOSI / GPIO 23| BUS_MOSI((MOSI Line))
+    
+    BUS_SCK --- NRF[NRF24L01]
+    BUS_SCK --- CC[CC1101]
+    BUS_SCK --- SD[SD Card]
+    
+    BUS_MISO --- NRF
+    BUS_MISO --- CC
+    BUS_MISO --- SD
+    
+    BUS_MOSI --- NRF
+    BUS_MOSI --- CC
+    BUS_MOSI --- SD
+    
+    %% Chip Selects
+    ESP -->|CSN / GPIO 17| NRF
+    ESP -->|CE / GPIO 5| NRF
+    
+    ESP -->|CSN / GPIO 27| CC
+    ESP -->|GDO0 / GPIO 15| CC
+    
+    ESP -->|CS / GPIO 13| SD
+    
+    %% I2C Display
+    ESP -->|SDA / GPIO 21| OLED
+    ESP -->|SCL / GPIO 22| OLED
+    
+    %% Controls
+    BTN[Buttons] -->|GPIO 26/32/33/25| ESP
+    NEO[NeoPixel] -->|GPIO 14| ESP
+```
+
 Все компоненты подключаются к одной плате ESP32. Будьте внимательны: **SPI шина общая** для трёх модулей (SD, CC1101, NRF24). Ниже — сводная таблица пинов и пояснения.
 
 ### Общая SPI шина (общая для NRF24, CC1101, SD Card)
